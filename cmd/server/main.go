@@ -83,6 +83,10 @@ func main() {
 	toolMap[grepTool.Name()] = grepTool
 	log.Println("  - Grep tool enabled")
 
+	// HTTP Tool
+	httpTool := tools.NewHTTPTool(30, 10)
+	toolMap[httpTool.Name()] = httpTool
+	log.Println("  - HTTP tool enabled")
 
 	// Add mock tool for testing
 	mockTool := tools.NewMockTool("echo")

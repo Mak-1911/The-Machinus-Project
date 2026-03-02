@@ -209,6 +209,9 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 	toolMap["glob"] = tools.NewGlobTool(1000)
 	toolMap["grep"] = tools.NewGrepTool(1000)
 
+	// HTTP tool
+	toolMap["http"] = tools.NewHTTPTool(30, 10)
+
 	// Mock tool for testing
 	toolMap["echo"] = tools.NewMockTool("echo")
 
