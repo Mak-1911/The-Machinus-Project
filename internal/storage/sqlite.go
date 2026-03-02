@@ -355,3 +355,94 @@ func (s *SQLiteStore) ListProjects(ctx context.Context, userID string) ([]map[st
 
 	return projects, nil
 }
+
+
+// SaveSession saves a session
+func(s* SQLiteStore) SaveSession(ctx context.Context, session *agent.Session) error {
+	messagesJSON, _ := json.Marshal(session.Messages)
+	metadataJSON, _ := json.Marshal(session.Metadata)
+
+	query := `
+			INSERT INTO sessions (id, started_at, last_active, messages, status, metadata)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (id) DO UPDATE SET
+				messages = excluded.messages,
+				status = excluded.status,
+				last_active = excluded.last_active,
+				metadata = excluded.metadata
+	`
+	_, err := s.db.ExecContext(ctx, query,
+			session.ID, session.StartedAt, session.LastActive,
+			string(messagesJSON), session.Status, string(metadataJSON),
+	)
+	return err
+}
+
+
+// GetSession retrieves a session by ID
+func (s *SQLiteStore) GetSession(ctx context.Context, sessionID string) (*agent.Session, error) {
+	var session agent.Session
+	var messagesJSON, metadataJSON string
+
+	query := `SELECT id, started_at, last_active, messages, status, metadata FROM sessions WHERE id = ?`
+	err := s.db.QueryRowContext(ctx, query, sessionID).Scan(
+		&session.ID, &session.StartedAt, &session.LastActive,
+		&messagesJSON, &session.Status, &metadataJSON,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if messagesJSON != "" {
+		json.Unmarshal([]byte(messagesJSON), &session.Messages)
+	}
+	if metadataJSON != "" {
+		json.Unmarshal([]byte(metadataJSON), &session.Metadata)
+	}
+
+	return &session, nil
+}
+
+// ListSessions lists all sessions
+func (s *SQLiteStore) ListSessions(ctx context.Context) ([]agent.Session, error) {
+	query := `SELECT id, started_at, last_active, messages, status, metadata FROM sessions ORDER BY last_active DESC`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []agent.Session
+	for rows.Next() {
+		var session agent.Session
+		var messagesJSON, metadataJSON string
+		if err := rows.Scan(&session.ID, &session.StartedAt, &session.LastActive,
+			&messagesJSON, &session.Status, &metadataJSON); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(messagesJSON), &session.Messages)
+		json.Unmarshal([]byte(metadataJSON), &session.Metadata)
+		sessions = append(sessions, session)
+	}
+
+	return sessions, nil
+}
+
+// DeleteSession deletes a session
+func (s *SQLiteStore) DeleteSession(ctx context.Context, sessionID string) error {
+	query := `DELETE FROM sessions WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, query, sessionID)
+	return err
+}
+
+// CleanupExpiredSessions removes expired sessions
+func (s *SQLiteStore) CleanupExpiredSessions(ctx context.Context) (int, error) {
+	cutoff := time.Now().Add(-24 * time.Hour)
+	query := `DELETE FROM sessions WHERE last_active < ?`
+	result, err := s.db.ExecContext(ctx, query, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	rows, _ := result.RowsAffected()
+	return int(rows), nil
+}

@@ -33,12 +33,14 @@ const (
 
 // InteractiveCLI handles the interactive mode
 type InteractiveCLI struct {
-	ctx         context.Context
-	cfg         *config.Config
-	store       *storage.SQLiteStore
-	orch        *agent.Orchestrator
-	userID      string
-	history     []string // Conversation history for context
+	ctx            context.Context
+	cfg            *config.Config
+	store          *storage.SQLiteStore
+	orch           *agent.Orchestrator
+	sessionManager *agent.SessionManager
+	sessionID      string
+	userID         string
+	history        []string // Conversation history for context
 }
 
 func main() {
@@ -86,9 +88,20 @@ func runSingleShot(cfg *config.Config, message string) {
 		memManager = memory.NewManager(store, true, cfg.MaxMemories)
 	}
 
+	// Create session manager
+	sessionMgr := agent.NewSessionManager(store)
+	session, err := sessionMgr.GetOrCreateDefaultSession(ctx, "")
+	if err != nil {
+		log.Printf("Warning: failed to create session: %v", err)
+	}
+
 	// Create streaming log writer for real-time output
 	logWriter := agent.NewStreamingLogWriter(store, true, false)
-	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter)
+	var sessionID string
+	if session != nil {
+		sessionID = session.ID
+	}
+	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, sessionID)
 
 	// Execute
 	fmt.Printf("\n%s▶%s Executing: %s\n\n", ColorBold, ColorReset, message)
@@ -147,18 +160,31 @@ func runInteractive(cfg *config.Config) {
 		memManager = memory.NewManager(store, true, cfg.MaxMemories)
 	}
 
+	// Create session manager
+	sessionMgr := agent.NewSessionManager(store)
+	session, err := sessionMgr.GetOrCreateDefaultSession(ctx, "")
+	if err != nil {
+		log.Printf("Warning: failed to create session: %v", err)
+	}
+
 	// Create streaming log writer for real-time output
 	logWriter := agent.NewStreamingLogWriter(store, true, false)
-	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter)
+	var sessionID string
+	if session != nil {
+		sessionID = session.ID
+	}
+	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, sessionID)
 
 	// Create CLI instance
 	cli := &InteractiveCLI{
-		ctx:      ctx,
-		cfg:      cfg,
-		store:    store,
-		orch:     orch,
-		userID:   cliUserID,
-		history:  []string{},
+		ctx:            ctx,
+		cfg:            cfg,
+		store:          store,
+		orch:           orch,
+		sessionManager: sessionMgr,
+		sessionID:      sessionID,
+		userID:         cliUserID,
+		history:        []string{},
 	}
 
 	// Start interactive loop
@@ -233,9 +259,11 @@ func printWelcome() {
 	fmt.Printf("%s║%s            %s🤖 Machinus Cloud Agent %s                   %s║%s\n", ColorBold, ColorReset, ColorPurple, ColorReset, ColorBold, ColorReset)
 	fmt.Printf("%s╚════════════════════════════════════════════════════════════╝%s\n\n", ColorBold, ColorReset)
 	fmt.Printf("%sCommands:%s\n", ColorGray, ColorReset)
-	fmt.Printf("  /exit  - Exit the agent\n")
-	fmt.Printf("  /clear - Clear conversation history\n")
-	fmt.Printf("  /help  - Show this help message\n")
+	fmt.Printf("  /exit      - Exit the agent\n")
+	fmt.Printf("  /clear     - Clear current session conversation\n")
+	fmt.Printf("  /new       - Start a new session\n")
+	fmt.Printf("  /sessions  - List all sessions\n")
+	fmt.Printf("  /help      - Show this help message\n")
 	fmt.Printf("\n%sType your message to start interacting with the agent.%s\n\n", ColorGray, ColorReset)
 }
 
@@ -248,8 +276,32 @@ func (cli *InteractiveCLI) handleCommand(input string) {
 		os.Exit(0)
 
 	case "/clear":
-		cli.history = []string{}
-		fmt.Printf("%s✓ Conversation history cleared%s\n", ColorGreen, ColorReset)
+		if cli.sessionManager != nil && cli.sessionID != "" {
+			if err := cli.sessionManager.ClearSession(cli.ctx, cli.sessionID); err != nil {
+				fmt.Printf("%s✗ Failed to clear session: %v%s\n", ColorRed, err, ColorReset)
+			} else {
+				fmt.Printf("%s✓ Session cleared%s\n", ColorGreen, ColorReset)
+			}
+		} else {
+			cli.history = []string{}
+			fmt.Printf("%s✓ Conversation history cleared%s\n", ColorGreen, ColorReset)
+		}
+
+	case "/new":
+		if cli.sessionManager != nil {
+			newSession, err := cli.sessionManager.CreateSession(cli.ctx)
+			if err != nil {
+				fmt.Printf("%s✗ Failed to create session: %v%s\n", ColorRed, err, ColorReset)
+				return
+			}
+			cli.sessionID = newSession.ID
+			fmt.Printf("%s✓ Started new session: %s%s\n", ColorGreen, newSession.ID, ColorReset)
+		} else {
+			fmt.Printf("%s✗ Session manager not available%s\n", ColorRed, ColorReset)
+		}
+
+	case "/sessions":
+		cli.listSessions()
 
 	case "/help":
 		printWelcome()
@@ -295,4 +347,45 @@ func formatResponse(text string) string {
 	// Simple formatting - you could enhance this with word wrapping
 	// For now, just return as-is with proper newlines
 	return strings.TrimSpace(text)
+}
+
+func (cli *InteractiveCLI) listSessions() {
+	if cli.sessionManager == nil {
+		fmt.Printf("%s✗ Session manager not available%s\n", ColorRed, ColorReset)
+		return
+	}
+
+	sessions, err := cli.sessionManager.ListSessions(cli.ctx)
+	if err != nil {
+		fmt.Printf("%s✗ Failed to list sessions: %v%s\n", ColorRed, err, ColorReset)
+		return
+	}
+
+	if len(sessions) == 0 {
+		fmt.Printf("%sNo sessions found%s\n", ColorGray, ColorReset)
+		return
+	}
+
+	fmt.Printf("\n%sSessions:%s\n", ColorBold, ColorReset)
+	for i, session := range sessions {
+		indicator := " "
+		if session.ID == cli.sessionID {
+			indicator = "→"
+		}
+
+		statusColor := ColorGreen
+		if session.Status == "closed" {
+			statusColor = ColorGray
+		} else if session.IsExpired() {
+			statusColor = ColorRed
+		}
+
+		fmt.Printf("  %s %s[%d]%s %s(%s%s%s) - %d messages\n",
+			indicator,
+			ColorYellow, i+1, ColorReset,
+			session.ID[:8],
+			statusColor, session.Status, ColorReset,
+			len(session.Messages))
+	}
+	fmt.Println()
 }

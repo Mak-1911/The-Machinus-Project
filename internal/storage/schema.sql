@@ -84,3 +84,20 @@ CREATE TABLE IF NOT EXISTS subagents (
 CREATE INDEX IF NOT EXISTS idx_subagents_user_id ON subagents(user_id);
 CREATE INDEX IF NOT EXISTS idx_subagents_enabled ON subagents(enabled);
 CREATE INDEX IF NOT EXISTS idx_subagents_next_run ON subagents(next_run);
+
+
+
+-- Sessions table
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    started_at DATETIME NOT NULL,
+    last_active DATETIME NOT NULL,
+    messages TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    metadata TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active);

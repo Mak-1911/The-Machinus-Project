@@ -14,11 +14,13 @@ import (
 
 // Orchestrator coordinates the planning and execution of tasks
 type Orchestrator struct {
-	planner      *planner.Planner
-	tools        map[string]types.Tool
-	memory       *memory.Manager
-	store        Store
-	logWriter    LogWriter
+	planner      	*planner.Planner
+	tools        	map[string]types.Tool
+	memory       	*memory.Manager
+	store        	Store
+	logWriter    	LogWriter
+	sessionManager *SessionManager
+	sessionID 		string
 }
 
 // Store defines the storage interface for the orchestrator
@@ -41,13 +43,17 @@ func NewOrchestrator(
 	m *memory.Manager,
 	store Store,
 	logWriter LogWriter,
+	sessionMgr *SessionManager,
+	sessionID string,
 ) *Orchestrator {
 	return &Orchestrator{
-		planner:   p,
-		tools:     tools,
-		memory:    m,
-		store:     store,
-		logWriter: logWriter,
+		planner:   		p,
+		tools:     		tools,
+		memory:    		m,
+		store:     		store,
+		logWriter: 		logWriter,
+		sessionManager: sessionMgr,
+		sessionID: 		sessionID,
 	}
 }
 
@@ -74,10 +80,29 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 		o.logWriter.Write(ctx, task.ID, "warning", fmt.Sprintf("Failed to retrieve memories: %v", err), 0)
 	}
 
-	// Initialize conversation history
-	conversation := []planner.ConversationMessage{
-		{Role: "user", Content: message},
+	// Load conversation history from session
+	conversation := []planner.ConversationMessage{}
+
+	if o.sessionManager != nil && o.sessionID != "" {
+		session, err := o.sessionManager.GetSession(ctx, o.sessionID)
+		if err == nil && session != nil && len(session.Messages) > 0 {
+			// Convert session messages to planner format
+			for _, msg := range session.Messages {
+				conversation = append(conversation, planner.ConversationMessage{
+					Role:    msg.Role,
+					Content: msg.Content,
+					ToolID:  msg.ToolID,
+				})
+			}
+			o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Loaded %d messages from session", len(session.Messages)), 0)
+		}
 	}
+
+	// Add new user message
+	conversation = append(conversation, planner.ConversationMessage{
+		Role:    "user",
+		Content: message,
+	})
 
 	// Continuation loop - keep executing tools until LLM returns final text
 	o.logWriter.Write(ctx, task.ID, "info", "Processing request...", 0)
@@ -221,6 +246,21 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 	task.CompletedAt = &now
 	task.UpdatedAt = now
 	o.store.SaveTask(ctx, task)
+
+	// Save conversation to session
+	if o.sessionManager != nil && o.sessionID != "" {
+		// Save user message
+		if err := o.sessionManager.AddMessage(ctx, o.sessionID, "user", message, ""); err == nil {
+			o.logWriter.Write(ctx, task.ID, "info", "Saved user message to session", 0)
+		}
+
+		// Save assistant response if available
+		if finalResponse != "" {
+			if err := o.sessionManager.AddMessage(ctx, o.sessionID, "assistant", finalResponse, ""); err == nil {
+				o.logWriter.Write(ctx, task.ID, "info", "Saved assistant response to session", 0)
+			}
+		}
+	}
 
 	// Create memory from result
 	summary := fmt.Sprintf("Executed: %s", message)

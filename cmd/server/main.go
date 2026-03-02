@@ -103,9 +103,13 @@ func main() {
 	// Create log writer
 	logWriter := agent.NewStorageLogWriter(store, nil)
 
+	// Initialize session manager
+	log.Println("Initializing session manager...")
+	sessionMgr := agent.NewSessionManager(store)
+
 	// Initialize orchestrator
 	log.Println("Initializing orchestrator...")
-	orchestrator := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter)
+	orchestrator := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, "")
 
 	// Initialize API server
 	log.Println("Initializing API server...")
