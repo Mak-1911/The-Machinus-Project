@@ -58,6 +58,41 @@
 - [ ] List all environment variables
 - [ ] Support `.env` file loading
 
+---
+
+## Medium Priority Tools 🟡
+
+### Browser Automation Tool ✅
+- [x] Navigate to URLs
+- [x] Click elements
+- [x] Fill form inputs
+- [x] Extract text content
+- [x] Take screenshots
+- [x] Wait for elements
+- [x] Execute JavaScript
+- [x] Get page HTML
+- [x] Get page title/URL
+- [ ] Handle file uploads
+- [ ] Handle multiple tabs
+- [ ] Cookie management
+- [ ] Device emulation
+
+**Use Cases:**
+- Web scraping from JavaScript-heavy sites
+- Automated form filling
+- Screenshot capture for monitoring
+- Testing web applications
+- Multi-step web workflows
+- Data extraction from authenticated pages
+
+**Implementation:** `internal/tools/browser.go` (uses Playwright)
+
+**Setup Required:**
+```bash
+go install github.com/playwright-community/playwright-go/cmd/playwright@latest
+playwright install --with-deps chromium
+```
+
 **Use Cases:**
 - Configuration management
 - API keys and secrets

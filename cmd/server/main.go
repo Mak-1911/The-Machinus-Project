@@ -113,6 +113,11 @@ func main() {
 	toolMap[httpTool.Name()] = httpTool
 	log.Println("  - HTTP tool enabled")
 
+	// Browser Tool
+	browserTool := tools.NewBrowserTool()
+	toolMap[browserTool.Name()] = browserTool
+	log.Println("  - Browser tool enabled")
+
 	// Add mock tool for testing
 	mockTool := tools.NewMockTool("echo")
 	toolMap[mockTool.Name()] = mockTool

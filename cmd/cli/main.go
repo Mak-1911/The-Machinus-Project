@@ -220,6 +220,9 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 	// HTTP tool
 	toolMap["http"] = tools.NewHTTPTool(30, 10)
 
+	// Browser tool
+	toolMap["browser"] = tools.NewBrowserTool()
+
 	// Mock tool for testing
 	toolMap["echo"] = tools.NewMockTool("echo")
 

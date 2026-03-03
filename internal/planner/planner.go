@@ -661,6 +661,52 @@ case "grep":
 		},
 		"required": []string{"path"},
 	}
+	case "browser":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"actions": map[string]interface{}{
+				"type":        "array",
+				"description": "List of browser actions to execute in sequence",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"action": map[string]interface{}{
+							"type":        "string",
+							"description": "Action to perform",
+							"enum":        []string{"goto", "click", "fill", "text", "screenshot", "wait", "wait_for_navigation", "evaluate", "html", "url", "title"},
+						},
+						"url": map[string]interface{}{
+							"type":        "string",
+							"description": "URL to navigate to (for 'goto' action)",
+						},
+						"selector": map[string]interface{}{
+							"type":        "string",
+							"description": "CSS selector for element (for 'click', 'fill', 'text', 'wait' actions)",
+						},
+						"value": map[string]interface{}{
+							"type":        "string",
+							"description": "Value to fill (for 'fill' action)",
+						},
+						"path": map[string]interface{}{
+							"type":        "string",
+							"description": "File path for screenshot (for 'screenshot' action)",
+						},
+						"full_page": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Capture full page screenshot (for 'screenshot' action, default false)",
+						},
+						"script": map[string]interface{}{
+							"type":        "string",
+							"description": "JavaScript code to execute (for 'evaluate' action)",
+						},
+					},
+					"required": []string{"action"},
+				},
+			},
+		},
+		"required": []string{"actions"},
+	}
 	default:
 		return nil
 	}
