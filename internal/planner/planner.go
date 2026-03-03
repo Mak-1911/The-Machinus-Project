@@ -35,7 +35,7 @@ func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool) *Pla
 			APIKey:  apiKey,
 			Model:   model,
 			HTTPClient: &http.Client{
-				Timeout: 30 * time.Second,
+				Timeout: 120 * time.Second, // Increased to 2 minutes for complex queries
 			},
 		},
 		tools: tools,
@@ -300,35 +300,86 @@ func (p *Planner) Continue(ctx context.Context, messages []ConversationMessage, 
 func (p *Planner) buildSystemPrompt(tools []ToolDef) string {
 	var toolList strings.Builder
 	for _, tool := range tools {
-		toolList.WriteString(fmt.Sprintf("- %s: %s\n", tool.Function.Name, tool.Function.Description))
+		// Get the actual tool instance to access metadata
+		toolInstance, exists := p.tools[tool.Function.Name]
+		if exists {
+			// Include rich metadata
+			examples := toolInstance.Examples()
+			whenToUse := toolInstance.WhenToUse()
+			chainsWith := toolInstance.ChainsWith()
+
+			toolList.WriteString(fmt.Sprintf("\n## %s\n", tool.Function.Name))
+			toolList.WriteString(fmt.Sprintf("Description: %s\n", tool.Function.Description))
+
+			if whenToUse != "" {
+				toolList.WriteString(fmt.Sprintf("When to use: %s\n", whenToUse))
+			}
+
+			if len(chainsWith) > 0 {
+				toolList.WriteString(fmt.Sprintf("Works well with: %s\n", strings.Join(chainsWith, ", ")))
+			}
+
+			if len(examples) > 0 {
+				toolList.WriteString("Examples:\n")
+				for i, example := range examples {
+					toolList.WriteString(fmt.Sprintf("  %d. %s\n", i+1, example.Description))
+					// Format args as JSON
+					if argsJSON, err := json.Marshal(example.Input); err == nil {
+						toolList.WriteString(fmt.Sprintf("     Args: %s\n", string(argsJSON)))
+					}
+				}
+			}
+			toolList.WriteString("\n")
+		} else {
+			// Fallback if tool instance not found
+			toolList.WriteString(fmt.Sprintf("- %s: %s\n", tool.Function.Name, tool.Function.Description))
+		}
 	}
 
-	return fmt.Sprintf(`You are a tool-execution agent. Execute user requests using tools.
+	return fmt.Sprintf(`You are an intelligent agent that executes user requests by calling tools.
 
-Available Tools:
+# Available Tools
 %s
 
-RULES:
-1. Call tools when user asks you to DO something
-2. After getting tool results, respond with a summary - DO NOT call more tools unless needed
-3. Stop after 1-2 tool calls and respond to the user
-4. ALWAYS read_file before edit_file
-5. Use glob to find files by name, grep to search contents
+# Execution Strategy
+1. Understand the user's goal
+2. Select the appropriate tool(s) based on the task
+3. Chain tools when needed (e.g., glob → grep → read_file)
+4. After 1-2 tool calls, summarize results and STOP
+5. Always read files before editing them
+6. Use glob to find files, grep to search contents
 
-Tool Call Format:
-{"tool_calls": [{"type": "function", "function": {"name": "tool_name", "arguments": "{\"param\": \"value\"}"}}]}
+# Tool Call Format
+Return JSON with tool_calls array:
+{
+  "tool_calls": [{
+    "type": "function",
+    "function": {
+      "name": "tool_name",
+      "arguments": "{\"param\": \"value\"}"
+    }
+  }]
+}
 
-Text Response Format:
-Just write your response normally (no JSON)
+# Important
+- Read BEFORE editing (use read_file before edit_file)
+- Chain related tools together (see "Works well with" above)
+- After getting results, provide a clear summary
+- STOP after completing the task - don't keep calling tools unnecessarily
 
-Examples:
-User: "Find all go files"
-You: [Call glob tool, get results, then respond with summary]
+# Examples
+User: "Find all Go files"
+You: Use glob tool with pattern "*.go", then summarize results
+
+User: "Search for TODO comments"
+You: Use grep tool with pattern "TODO" in "*.go" files
+
+User: "What files do we have?"
+You: Use list tool to show directory contents
 
 User: "hello"
-You: "Hello! How can I help?"
-
-IMPORTANT: After calling tools and getting results, summarize and STOP. Do not keep calling tools.`, toolList.String())
+You: "Hello! I'm here to help with file operations, web requests, and system tasks."
+`, toolList.String())
 }
 
 func (p *Planner) buildUserPrompt(message string, memories []memory.Memory) string {
@@ -470,6 +521,145 @@ case "grep":
 			},
 		},
 		"required": []string{"pattern"},
+	}
+	case "http":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"url": map[string]interface{}{
+				"type":        "string",
+				"description": "The HTTP endpoint to call (must start with http:// or https://)",
+			},
+			"method": map[string]interface{}{
+				"type":        "string",
+				"description": "HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)",
+				"enum":        []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"},
+			},
+			"headers": map[string]interface{}{
+				"type":        "object",
+				"description": "Optional HTTP headers (e.g., {\"Authorization\": \"Bearer token\"})",
+			},
+			"body": map[string]interface{}{
+				"type":        "object",
+				"description": "Optional request body for POST/PUT/PATCH (will be JSON encoded)",
+			},
+			"query_params": map[string]interface{}{
+				"type":        "object",
+				"description": "Optional query parameters to append to URL",
+			},
+		},
+		"required": []string{"url", "method"},
+	}
+	case "copy":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"src": map[string]interface{}{
+				"type":        "string",
+				"description": "Source file or directory path to copy from",
+			},
+			"dest": map[string]interface{}{
+				"type":        "string",
+				"description": "Destination path to copy to",
+			},
+			"overwrite": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Overwrite if destination exists (default: false)",
+			},
+		},
+		"required": []string{"src", "dest"},
+	}
+	case "move":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"src": map[string]interface{}{
+				"type":        "string",
+				"description": "Source file or directory path to move",
+			},
+			"dest": map[string]interface{}{
+				"type":        "string",
+				"description": "Destination path (can be a rename or different directory)",
+			},
+			"overwrite": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Overwrite if destination exists (default: false)",
+			},
+		},
+		"required": []string{"src", "dest"},
+	}
+	case "delete":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "File or directory path to delete",
+			},
+			"recursive": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Delete directories recursively (default: false)",
+			},
+		},
+		"required": []string{"path"},
+	}
+	case "list":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "Directory path to list (default: current directory)",
+			},
+			"details": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Show detailed information (size, permissions, dates)",
+			},
+			"recursive": map[string]interface{}{
+				"type":        "boolean",
+				"description": "List subdirectories recursively",
+			},
+			"sort": map[string]interface{}{
+				"type":        "string",
+				"description": "Sort by 'name', 'size', or 'date'",
+				"enum":        []string{"name", "size", "date"},
+			},
+		},
+		"required": []string{},
+	}
+	case "mkdir":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "Directory path to create",
+			},
+			"parents": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Create parent directories as needed (like mkdir -p)",
+			},
+			"mode": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional permissions (e.g., '0755' for rwxr-xr-x)",
+			},
+		},
+		"required": []string{"path"},
+	}
+	case "fileinfo":
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "File or directory path to get information about",
+			},
+			"include_mime": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Include MIME type detection for files",
+			},
+		},
+		"required": []string{"path"},
 	}
 	default:
 		return nil

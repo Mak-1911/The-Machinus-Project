@@ -2,13 +2,13 @@
 
 ## High Priority Tools 🔴
 
-### HTTP/Fetch Tool
-- [ ] Make HTTP GET requests
-- [ ] Make HTTP POST requests with JSON body
-- [ ] Handle response headers and status codes
-- [ ] Support for custom headers (Authorization, Content-Type, etc.)
-- [ ] Timeout configuration
-- [ ] Error handling for network failures
+### HTTP/Fetch Tool ✅
+- [x] Make HTTP GET requests
+- [x] Make HTTP POST requests with JSON body
+- [x] Handle response headers and status codes
+- [x] Support for custom headers (Authorization, Content-Type, etc.)
+- [x] Timeout configuration
+- [x] Error handling for network failures
 
 **Use Cases:**
 - Call external APIs
@@ -17,21 +17,17 @@
 - Test API endpoints
 - Download files from URLs
 
-**Implementation Notes:**
-- Use Go's `net/http` package
-- Support common HTTP methods (GET, POST, PUT, DELETE, PATCH)
-- Return response body, status code, and headers
-- Limit response size to prevent memory issues
+**Implementation:** `internal/tools/http.go`
 
 ---
 
-### File Operations Expansion
-- [ ] Copy files/directories
-- [ ] Move/rename files
-- [ ] Delete files and directories
-- [ ] List directory contents with details (size, permissions, dates)
-- [ ] Create directories with parents (`mkdir -p`)
-- [ ] File permissions management
+### File Operations Expansion ✅
+- [x] Copy files/directories
+- [x] Move/rename files
+- [x] Delete files and directories
+- [x] List directory contents with details (size, permissions, dates)
+- [x] Create directories with parents (`mkdir -p`)
+- [x] File information (permissions, timestamps, MIME type)
 
 **Use Cases:**
 - File management operations
@@ -45,6 +41,14 @@
 - ✅ `edit_file` - Edit specific portions of files
 - ✅ `glob` - Find files by pattern
 - ✅ `grep` - Search file contents
+- ✅ `copy` - Copy files/directories
+- ✅ `move` - Move/rename files
+- ✅ `delete` - Delete files/directories
+- ✅ `list` - List directory contents
+- ✅ `mkdir` - Create directories
+- ✅ `fileinfo` - Get detailed file information
+
+**Implementation:** `internal/tools/copy.go`, `move.go`, `delete.go`, `list.go`, `mkdir.go`, `fileinfo.go`
 
 ---
 

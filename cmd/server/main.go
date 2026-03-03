@@ -83,6 +83,31 @@ func main() {
 	toolMap[grepTool.Name()] = grepTool
 	log.Println("  - Grep tool enabled")
 
+	// File Operations
+	copyTool := tools.NewCopyTool(1)
+	toolMap[copyTool.Name()] = copyTool
+	log.Println("  - Copy tool enabled")
+
+	moveTool := tools.NewMoveTool()
+	toolMap[moveTool.Name()] = moveTool
+	log.Println("  - Move tool enabled")
+
+	deleteTool := tools.NewDeleteTool(false)
+	toolMap[deleteTool.Name()] = deleteTool
+	log.Println("  - Delete tool enabled")
+
+	listTool := tools.NewListTool()
+	toolMap[listTool.Name()] = listTool
+	log.Println("  - List tool enabled")
+
+	mkdirTool := tools.NewMakeDirectoryTool()
+	toolMap[mkdirTool.Name()] = mkdirTool
+	log.Println("  - Mkdir tool enabled")
+
+	fileInfoTool := tools.NewFileInfoTool()
+	toolMap[fileInfoTool.Name()] = fileInfoTool
+	log.Println("  - Fileinfo tool enabled")
+
 	// HTTP Tool
 	httpTool := tools.NewHTTPTool(30, 10)
 	toolMap[httpTool.Name()] = httpTool

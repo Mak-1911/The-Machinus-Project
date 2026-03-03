@@ -209,6 +209,14 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 	toolMap["glob"] = tools.NewGlobTool(1000)
 	toolMap["grep"] = tools.NewGrepTool(1000)
 
+	// File operations
+	toolMap["copy"] = tools.NewCopyTool(1)
+	toolMap["move"] = tools.NewMoveTool()
+	toolMap["delete"] = tools.NewDeleteTool(false)
+	toolMap["list"] = tools.NewListTool()
+	toolMap["mkdir"] = tools.NewMakeDirectoryTool()
+	toolMap["fileinfo"] = tools.NewFileInfoTool()
+
 	// HTTP tool
 	toolMap["http"] = tools.NewHTTPTool(30, 10)
 
