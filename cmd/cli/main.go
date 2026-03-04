@@ -59,41 +59,60 @@ func main() {
 }
 
 func runSingleShot(cfg *config.Config, message string) {
-	// Initialize storage
-	fmt.Println("Initializing storage...")
+	// Track boot time
+	bootStart := time.Now()
+	fmt.Printf("%sInitializing Machinus...%s\n", ColorGray, ColorReset)
+
 	ctx := context.Background()
+
+	// Initialize storage with timing
+	stepStart := time.Now()
 	store, err := storage.NewSQLiteStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
+	fmt.Printf("  ✓ Storage initialized %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Run migrations
+	stepStart = time.Now()
 	if err := store.Migrate(ctx); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
+	fmt.Printf("  ✓ Migrations completed %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Create CLI user
+	stepStart = time.Now()
 	cliUserID := "cli-user"
 	if err := store.CreateUser(ctx, cliUserID, "CLI User", "cli@example.com"); err != nil {
 		log.Printf("Note: %v", err)
 	}
+	fmt.Printf("  ✓ User configured %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Initialize components
+	stepStart = time.Now()
 	toolMap := initializeTools(cfg)
+	fmt.Printf("  ✓ Tools loaded %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
+
+	stepStart = time.Now()
 	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap)
+	fmt.Printf("  ✓ Planner ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	var memManager *memory.Manager
 	if cfg.EnableMemory {
+		stepStart = time.Now()
 		memManager = memory.NewManager(store, true, cfg.MaxMemories)
+		fmt.Printf("  ✓ Memory enabled %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 	}
 
 	// Create session manager
+	stepStart = time.Now()
 	sessionMgr := agent.NewSessionManager(store)
 	session, err := sessionMgr.GetOrCreateDefaultSession(ctx, "")
 	if err != nil {
 		log.Printf("Warning: failed to create session: %v", err)
 	}
+	fmt.Printf("  ✓ Session ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Create streaming log writer for real-time output
 	logWriter := agent.NewStreamingLogWriter(store, true, false)
@@ -101,10 +120,17 @@ func runSingleShot(cfg *config.Config, message string) {
 	if session != nil {
 		sessionID = session.ID
 	}
+
+	stepStart = time.Now()
 	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, sessionID)
+	fmt.Printf("  ✓ Orchestrator ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
+
+	// Show total boot time
+	bootTime := time.Since(bootStart).Round(time.Millisecond)
+	fmt.Printf("\n%s▶%s Booted in %v\n\n", ColorBold, ColorReset, bootTime)
 
 	// Execute
-	fmt.Printf("\n%s▶%s Executing: %s\n\n", ColorBold, ColorReset, message)
+	fmt.Printf("%s▶%s Executing: %s\n\n", ColorBold, ColorReset, message)
 	fmt.Println(strings.Repeat("─", 70))
 
 	task, err := orch.Execute(ctx, cliUserID, message)
@@ -131,41 +157,60 @@ func runSingleShot(cfg *config.Config, message string) {
 }
 
 func runInteractive(cfg *config.Config) {
-	// Initialize storage
-	fmt.Println("Initializing...")
+	// Track boot time
+	bootStart := time.Now()
+	fmt.Printf("%sInitializing Machinus...%s\n", ColorGray, ColorReset)
+
 	ctx := context.Background()
+
+	// Initialize storage with timing
+	stepStart := time.Now()
 	store, err := storage.NewSQLiteStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
+	fmt.Printf("  ✓ Storage initialized %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Run migrations
+	stepStart = time.Now()
 	if err := store.Migrate(ctx); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
+	fmt.Printf("  ✓ Migrations completed %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Create CLI user
+	stepStart = time.Now()
 	cliUserID := "cli-user"
 	if err := store.CreateUser(ctx, cliUserID, "CLI User", "cli@example.com"); err != nil {
 		log.Printf("Note: %v", err)
 	}
+	fmt.Printf("  ✓ User configured %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Initialize components
+	stepStart = time.Now()
 	toolMap := initializeTools(cfg)
+	fmt.Printf("  ✓ Tools loaded %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
+
+	stepStart = time.Now()
 	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap)
+	fmt.Printf("  ✓ Planner ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	var memManager *memory.Manager
 	if cfg.EnableMemory {
+		stepStart = time.Now()
 		memManager = memory.NewManager(store, true, cfg.MaxMemories)
+		fmt.Printf("  ✓ Memory enabled %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 	}
 
 	// Create session manager
+	stepStart = time.Now()
 	sessionMgr := agent.NewSessionManager(store)
 	session, err := sessionMgr.GetOrCreateDefaultSession(ctx, "")
 	if err != nil {
 		log.Printf("Warning: failed to create session: %v", err)
 	}
+	fmt.Printf("  ✓ Session ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Create streaming log writer for real-time output
 	logWriter := agent.NewStreamingLogWriter(store, true, false)
@@ -173,7 +218,14 @@ func runInteractive(cfg *config.Config) {
 	if session != nil {
 		sessionID = session.ID
 	}
+
+	stepStart = time.Now()
 	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, sessionID)
+	fmt.Printf("  ✓ Orchestrator ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
+
+	// Show total boot time
+	bootTime := time.Since(bootStart).Round(time.Millisecond)
+	fmt.Printf("\n%s▶%s Booted in %v\n\n", ColorBold, ColorReset, bootTime)
 
 	// Create CLI instance
 	cli := &InteractiveCLI{
@@ -274,7 +326,7 @@ func (cli *InteractiveCLI) run() {
 
 func printWelcome() {
 	fmt.Printf("\n%s╔════════════════════════════════════════════════════════════╗%s\n", ColorBold, ColorReset)
-	fmt.Printf("%s║%s            %s🤖 Machinus Cloud Agent %s                   %s║%s\n", ColorBold, ColorReset, ColorPurple, ColorReset, ColorBold, ColorReset)
+	fmt.Printf("%s║%s            %s🤖 Machinus Cloud Agent %s                     %s║%s\n", ColorBold, ColorReset, ColorPurple, ColorReset, ColorBold, ColorReset)
 	fmt.Printf("%s╚════════════════════════════════════════════════════════════╝%s\n\n", ColorBold, ColorReset)
 	fmt.Printf("%sCommands:%s\n", ColorGray, ColorReset)
 	fmt.Printf("  /exit      - Exit the agent\n")

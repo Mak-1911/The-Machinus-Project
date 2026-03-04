@@ -231,7 +231,8 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]any) (types.Too
 		}
 	}
 
-	return types.ToolResult{
+	// Build result with error recovery metadata
+	result := types.ToolResult{
 		Success: success,
 		Output:  string(output),
 		Error:   errorMsg,
@@ -240,7 +241,46 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]any) (types.Too
 			"command":  cmd,
 			"shell":    shellUsed,
 		},
-	}, nil
+	}
+
+	// Add error recovery metadata for failed commands
+	if !success {
+		errStr := errorMsg
+
+		// Analyze error type
+		if ctx.Err() == context.DeadlineExceeded || strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "timeout") {
+			// Timeout errors
+			result.FailureType = types.FailureTypeSoft
+			result.Retryable = true
+			result.Alternatives = []string{}
+			// Add timeout info to data
+			if dataMap, ok := result.Data.(map[string]any); ok {
+				dataMap["timeout_hit"] = true
+			}
+		} else if strings.Contains(errStr, "command not found") || strings.Contains(errStr, "not recognized") {
+			// Command not found - typically not retryable with same command
+			result.FailureType = types.FailureTypeHard
+			result.Retryable = false
+			result.Alternatives = []string{"http", "browser"} // May be available as web service
+		} else if strings.Contains(errStr, "permission denied") {
+			// Permission errors - not retryable
+			result.FailureType = types.FailureTypeHard
+			result.Retryable = false
+			result.Alternatives = []string{}
+		} else if strings.Contains(errStr, "no such file or directory") {
+			// File not found
+			result.FailureType = types.FailureTypeHard
+			result.Retryable = false
+			result.Alternatives = []string{"glob", "search"}
+		} else {
+			// Other errors - treat as soft failure, might be transient
+			result.FailureType = types.FailureTypeSoft
+			result.Retryable = true
+			result.Alternatives = []string{}
+		}
+	}
+
+	return result, nil
 }
 // MockTool is a simple echo tool for testing
 type MockTool struct {

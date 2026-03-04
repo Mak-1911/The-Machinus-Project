@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/machinus/cloud-agent/internal/types"
@@ -19,6 +20,9 @@ type PinchTabTool struct {
 	baseURL    string
 	httpClient *http.Client
 	autoStart  bool
+	checked    bool  // Track if we've checked for running
+	running    bool  // Cache running state
+	mu         sync.Mutex // Protects checked/running
 }
 
 // NewPinchTabTool creates a new PinchTab tool
@@ -33,6 +37,8 @@ func NewPinchTabTool(baseURL string) *PinchTabTool {
 			Timeout: 30 * time.Second,
 		},
 		autoStart: true,
+		checked: false,  // Don't check on init - lazy load
+		running: false,
 	}
 }
 
@@ -107,22 +113,39 @@ func (t *PinchTabTool) startPinchTab(ctx context.Context) error {
 	}
 }
 
-// ensurePinchTabRunning checks and starts PinchTab if needed
+// ensurePinchTabRunning checks and starts PinchTab if needed (lazy, thread-safe)
 func (t *PinchTabTool) ensurePinchTabRunning(ctx context.Context) error {
-	if t.isPinchTabRunning(ctx) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Check cache first
+	if t.checked && t.running {
 		return nil
 	}
 
+	// Check if PinchTab is running (only check once)
+	if !t.checked {
+		t.checked = true
+		t.running = t.isPinchTabRunning(ctx)
+
+		if t.running {
+			return nil  // Already running, no action needed
+		}
+	}
+
+	// Not running and auto-start is disabled
 	if !t.autoStart {
 		return fmt.Errorf("pinchtab is not running at %s - start it with: pinchtab", t.baseURL)
 	}
 
+	// Try to start it
 	fmt.Printf("🔄 PinchTab not detected, starting automatically...\n")
 
 	if err := t.startPinchTab(ctx); err != nil {
 		return err
 	}
 
+	t.running = true
 	fmt.Printf("✅ PinchTab started successfully\n")
 	return nil
 }

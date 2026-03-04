@@ -336,15 +336,15 @@ func (p *Planner) buildSystemPrompt(tools []ToolDef) string {
 		}
 	}
 
-	return fmt.Sprintf(`You are an intelligent agent that executes user requests by calling tools.
+	prompt := `You are an intelligent agent that executes user requests by calling tools.
 
 # Available Tools
-%s
+` + toolList.String() + `
 
 # Execution Strategy
 1. Understand the user's goal
 2. Select the appropriate tool(s) based on the task
-3. Chain tools when needed (e.g., glob → grep → read_file)
+3. Chain tools when needed (e.g., glob -> grep -> read_file)
 4. After 1-2 tool calls, summarize results and STOP
 5. Always read files before editing them
 6. Use glob to find files, grep to search contents
@@ -367,6 +367,70 @@ Return JSON with tool_calls array:
 - After getting results, provide a clear summary
 - STOP after completing the task - don't keep calling tools unnecessarily
 
+## Error Recovery & Retry Strategy (Claude Code Style)
+
+When a tool fails, analyze the error before retrying:
+
+### 1. Identify Failure Type
+Tool errors include metadata about the failure type:
+- Hard failures: Don't retry (404, permission denied, auth failed)
+- Soft failures: Retry with backoff (timeout, 503, rate limit)
+- Partial failures: Consider using partial results
+- Ambiguous failures: Use context to decide
+
+### 2. Adaptive Retry Strategies
+Don't just repeat the same call - adapt:
+
+Timeout errors: Increase timeout duration
+- Attempt 1: http tool with 30s timeout -> timeout
+- Attempt 2: http tool with 60s timeout -> success
+
+Too many results: Be more specific
+- Attempt 1: grep with broad pattern -> too many matches
+- Attempt 2: grep with more specific pattern -> better results
+- Attempt 3: Use code tool with symbol_search -> precise results
+
+File not found: Search for alternatives
+- Attempt 1: read_file specific path -> not found
+- Attempt 2: glob to find similar files -> found alternatives
+- Attempt 3: Use closest match or ask user
+
+Permission errors: Try alternative approach
+- Attempt 1: read protected file -> permission denied
+- Attempt 2: Ask user to provide content or use different approach
+
+Tool unavailable: Try alternative tools
+- Attempt 1: browser tool -> service not running
+- Fallback: Use http tool for basic content
+- Message: "Browser unavailable, using HTTP fetch"
+
+### 3. Suggested Alternatives
+When tools fail, they may suggest alternatives:
+- HTTP failures -> Try browser tool
+- File too large -> Stream with shell (head/tail)
+- Search too broad -> Use code/LSP tools
+- Network issues -> Try different endpoint
+
+### 4. Know When to Stop
+- Don't retry auth failures
+- Don't retry 404s (file doesn't exist)
+- Don't retry syntax errors in your own commands
+- DO retry timeouts and 5xx errors
+- Ask user for help if stuck after 2-3 attempts
+
+### 5. Transparent Communication
+When retries happen, explain what happened:
+- "HTTP request timed out (attempt 1/3). Retrying with increased timeout..."
+- "File too large (50MB). Using shell to stream first 1000 lines..."
+- "Browser unavailable. Using HTTP fetch as fallback."
+
+### 6. Use Execution History
+Tool results include execution history showing:
+- Number of attempts made
+- What failed and why
+- How long each attempt took
+- Whether alternatives were tried
+
 # Examples
 User: "Find all Go files"
 You: Use glob tool with pattern "*.go", then summarize results
@@ -377,9 +441,15 @@ You: Use grep tool with pattern "TODO" in "*.go" files
 User: "What files do we have?"
 You: Use list tool to show directory contents
 
+User: "Fetch https://example.com/api/data"
+Attempt 1: http tool with 30s timeout - timed out
+You: "Request timed out. Retrying with 60s timeout..."
+Attempt 2: http tool with 60s timeout - success
+
 User: "hello"
 You: "Hello! I'm here to help with file operations, web requests, and system tasks."
-`, toolList.String())
+`
+	return prompt
 }
 
 func (p *Planner) buildUserPrompt(message string, memories []memory.Memory) string {

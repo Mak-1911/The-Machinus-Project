@@ -57,6 +57,141 @@ func NewOrchestrator(
 	}
 }
 
+// executeWithRetry implements Claude Code's retry strategy
+func (o *Orchestrator) executeWithRetry(ctx context.Context, tool types.Tool, toolName string, args map[string]any, taskID string, step int) types.ToolResult {
+	maxAttempts := 3
+	policy := types.DefaultRetryPolicy()
+	var history types.ExecutionHistory
+	history.ToolName = toolName
+
+	for attemptNum := 0; attemptNum < maxAttempts; attemptNum++ {
+		startTime := time.Now()
+		result := types.ToolResult{}
+
+		// Execute the tool
+		result, _ = tool.Execute(ctx, args)
+		duration := time.Since(startTime)
+
+		// Track this attempt
+		execAttempt := types.ExecutionAttempt{
+			Tool:          toolName,
+			Args:          args,
+			AttemptNumber: attemptNum + 1,
+			Duration:      duration.Milliseconds(),
+			Metadata:      map[string]any{},
+		}
+
+		if result.Error != "" {
+			execAttempt.Error = result.Error
+			execAttempt.FailureType = result.FailureType
+		}
+
+		if result.Data != nil && result.Progress > 0 {
+			execAttempt.PartialResult = result.Data
+		}
+
+		history.Attempts = append(history.Attempts, execAttempt)
+		history.Duration += duration.Milliseconds()
+
+		// If successful, return immediately
+		if result.Success {
+			history.Success = true
+			o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Tool succeeded on attempt %d", attemptNum+1), step)
+			// Add execution history to result data
+			if dataMap, ok := result.Data.(map[string]any); ok {
+				dataMap["execution_history"] = history
+			} else {
+				result.Data = map[string]any{"execution_history": history}
+			}
+			return result
+		}
+
+		// Check if we should retry
+		if !result.Retryable {
+			o.logWriter.Write(ctx, taskID, "warning", fmt.Sprintf("Tool failed with non-retryable error: %s", result.Error), step)
+			history.Success = false
+			if dataMap, ok := result.Data.(map[string]any); ok {
+				dataMap["execution_history"] = history
+			} else {
+				result.Data = map[string]any{"execution_history": history}
+			}
+			return result
+		}
+
+		// Last attempt - don't retry
+		if attemptNum == maxAttempts-1 {
+			o.logWriter.Write(ctx, taskID, "warning", fmt.Sprintf("Tool failed after %d attempts: %s", maxAttempts, result.Error), step)
+			history.Success = false
+			if dataMap, ok := result.Data.(map[string]any); ok {
+				dataMap["execution_history"] = history
+			} else {
+				result.Data = map[string]any{"execution_history": history}
+			}
+			return result
+		}
+
+		// Log retry attempt
+		backoffMs := policy.InitialBackoff * (1 << uint(attemptNum)) // Exponential backoff
+		if backoffMs > policy.MaxBackoff {
+			backoffMs = policy.MaxBackoff
+		}
+
+		o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Attempt %d failed, retrying in %dms: %s", attemptNum+1, backoffMs, result.Error), step)
+
+		// Adaptive retry: Try alternative tools if suggested
+		if len(result.Alternatives) > 0 && attemptNum == 1 {
+			altToolName := result.Alternatives[0]
+			if altTool, ok := o.tools[altToolName]; ok {
+				o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Trying alternative tool: %s", altToolName), step)
+				// Try alternative tool (simple substitution - in future, transform args appropriately)
+				altResult := o.executeWithRetry(ctx, altTool, altToolName, args, taskID, step)
+				if altDataMap, ok := altResult.Data.(map[string]any); ok {
+					altDataMap["original_tool"] = toolName
+					altDataMap["used_alternative"] = true
+				}
+				return altResult
+			}
+		}
+
+		// Adaptive retry: Modify parameters based on failure type
+		if result.FailureType == types.FailureTypeSoft {
+			// For timeouts, increase timeout if available
+			if timeoutVal, ok := args["timeout"].(int); ok {
+				args["timeout"] = timeoutVal * 2
+				o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Increased timeout to %d", args["timeout"]), step)
+			}
+		}
+
+		// Wait before retry with exponential backoff
+		select {
+		case <-time.After(time.Duration(backoffMs) * time.Millisecond):
+			// Continue to retry
+		case <-ctx.Done():
+			// Context cancelled
+			result.Error = "retry cancelled by context"
+			result.FailureType = types.FailureTypeSoft
+			result.Retryable = false
+			history.Success = false
+			if dataMap, ok := result.Data.(map[string]any); ok {
+				dataMap["execution_history"] = history
+			} else {
+				result.Data = map[string]any{"execution_history": history}
+			}
+			return result
+		}
+	}
+
+	// Shouldn't reach here, but return last result
+	history.Success = false
+	return types.ToolResult{
+		Success:     false,
+		Error:       "maximum retry attempts exceeded",
+		FailureType: types.FailureTypeSoft,
+		Retryable:   false,
+		Data:        map[string]any{"execution_history": history},
+	}
+}
+
 // Execute handles a user request from start to finish
 func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Task, error) {
 	// Create task
@@ -183,10 +318,12 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 					}
 				}
 
-				// Execute tool
-				result, err := tool.Execute(ctx, args)
-				if err != nil {
-					lastError = fmt.Errorf("tool execution error: %w", err)
+				// Execute tool with retry logic (Claude Code style)
+				result := o.executeWithRetry(ctx, tool, toolName, args, task.ID, iteration)
+
+				// Handle execution errors
+				if !result.Success && result.Error == "" {
+					lastError = fmt.Errorf("tool execution error")
 					o.logWriter.Write(ctx, task.ID, "error", lastError.Error(), iteration)
 
 					conversation = append(conversation, planner.ConversationMessage{
@@ -197,18 +334,30 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 					continue
 				}
 
-				// Log result
+				// Log result with execution context
 				if result.Success {
 					o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Output: %s", truncate(result.Output, 500)), iteration)
 				} else {
-					o.logWriter.Write(ctx, task.ID, "error", fmt.Sprintf("Tool error: %s", result.Error), iteration)
+					// Log failure type and retry info
+					retryInfo := ""
+					if dataMap, ok := result.Data.(map[string]any); ok {
+						if hist, ok := dataMap["execution_history"].(types.ExecutionHistory); ok {
+							retryInfo = fmt.Sprintf(" (attempts: %d)", len(hist.Attempts))
+						}
+					}
+					o.logWriter.Write(ctx, task.ID, "error", fmt.Sprintf("Tool error [%s]: %s%s", result.FailureType, result.Error, retryInfo), iteration)
 					lastError = fmt.Errorf("tool failed: %s", result.Error)
 				}
 
-				// Add tool result to conversation
+				// Add tool result to conversation with enhanced context
 				resultContent := result.Output
 				if !result.Success {
-					resultContent = fmt.Sprintf("Error: %s", result.Error)
+					// Add suggestions for alternatives
+					if len(result.Alternatives) > 0 {
+						resultContent = fmt.Sprintf("Error: %s\n\nAlternatives to try: %v", result.Error, result.Alternatives)
+					} else {
+						resultContent = fmt.Sprintf("Error: %s", result.Error)
+					}
 				}
 				conversation = append(conversation, planner.ConversationMessage{
 					Role:    "tool",

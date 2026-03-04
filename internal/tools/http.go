@@ -205,9 +205,28 @@ func (t *HTTPTool) Execute(ctx context.Context, args map[string]any) (types.Tool
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		// Analyze error type for retry logic
+		errStr := err.Error()
+		failureType := types.FailureTypeSoft
+		retryable := true
+		alternatives := []string{}
+
+		// Check for timeout
+		if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") {
+			failureType = types.FailureTypeSoft
+			retryable = true
+			alternatives = []string{"browser", "shell"}
+		} else if strings.Contains(errStr, "connection refused") {
+			failureType = types.FailureTypeHard
+			retryable = false
+		}
+
 		return types.ToolResult{
-			Success: false,
-			Error:   fmt.Sprintf("request failed: %v", err),
+			Success:      false,
+			Error:        fmt.Sprintf("request failed: %v", err),
+			FailureType:  failureType,
+			Retryable:    retryable,
+			Alternatives: alternatives,
 		}, nil
 	}
 	defer resp.Body.Close()
@@ -227,8 +246,19 @@ func (t *HTTPTool) Execute(ctx context.Context, args map[string]any) (types.Tool
 	// Check if we hit the size limit
 	if int64(len(respBody)) >= t.maxSize {
 		return types.ToolResult{
-			Success: false,
-			Error:   fmt.Sprintf("response too large (exceeds %d MB)", t.maxSize/(1024*1024)),
+			Success:      false,
+			Error:        fmt.Sprintf("response too large (exceeds %d MB)", t.maxSize/(1024*1024)),
+			FailureType:  types.FailureTypePartial,
+			Retryable:    false,
+			CanPartial:   true,
+			Progress:     1.0, // We got what we could within the limit
+			Alternatives: []string{"browser", "shell"},
+			Data: map[string]any{
+				"partial_body":  string(respBody),
+				"actual_size":   len(respBody),
+				"max_size":      t.maxSize,
+				"size_exceeded": true,
+			},
 		}, nil
 	}
 
@@ -277,7 +307,7 @@ func (t *HTTPTool) Execute(ctx context.Context, args map[string]any) (types.Tool
 	// Determine success based on status code
 	success := resp.StatusCode >= 200 && resp.StatusCode < 300
 
-	return types.ToolResult{
+	result := types.ToolResult{
 		Success: success,
 		Output:  output,
 		Data: map[string]any{
@@ -289,5 +319,30 @@ func (t *HTTPTool) Execute(ctx context.Context, args map[string]any) (types.Tool
 			"body":        string(respBody),
 			"duration_ms": duration.Milliseconds(),
 		},
-	}, nil
+	}
+
+	// Add error recovery metadata for failed requests
+	if !success {
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			// 4xx errors - client errors, typically not retryable
+			result.FailureType = types.FailureTypeHard
+			result.Retryable = false
+
+			// Specific error codes
+			if resp.StatusCode == 404 {
+				result.Alternatives = []string{"browser", "search"}
+			} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
+				result.Alternatives = []string{} // No alternative for auth issues
+			} else {
+				result.Alternatives = []string{"browser"}
+			}
+		} else if resp.StatusCode >= 500 {
+			// 5xx errors - server errors, potentially retryable
+			result.FailureType = types.FailureTypeSoft
+			result.Retryable = true
+			result.Alternatives = []string{"browser", "shell"}
+		}
+	}
+
+	return result, nil
 }
