@@ -674,15 +674,23 @@ case "grep":
 						"action": map[string]interface{}{
 							"type":        "string",
 							"description": "Action to perform",
-							"enum":        []string{"goto", "click", "fill", "text", "screenshot", "wait", "wait_for_navigation", "evaluate", "html", "url", "title"},
+							"enum":        []string{"create_instance", "navigate", "goto", "snapshot", "click", "fill", "text", "screenshot", "close"},
+						},
+						"profile": map[string]interface{}{
+							"type":        "string",
+							"description": "Profile name for browser instance (for 'create_instance' action, default 'default')",
 						},
 						"url": map[string]interface{}{
 							"type":        "string",
-							"description": "URL to navigate to (for 'goto' action)",
+							"description": "URL to navigate to (for 'navigate' or 'goto' action)",
 						},
-						"selector": map[string]interface{}{
+						"filter": map[string]interface{}{
 							"type":        "string",
-							"description": "CSS selector for element (for 'click', 'fill', 'text', 'wait' actions)",
+							"description": "Filter for snapshot (for 'snapshot' action): 'interactive', 'all', 'visible' (default 'interactive')",
+						},
+						"ref": map[string]interface{}{
+							"type":        "string",
+							"description": "Element reference from accessibility tree (for 'click' and 'fill' actions)",
 						},
 						"value": map[string]interface{}{
 							"type":        "string",
@@ -691,14 +699,6 @@ case "grep":
 						"path": map[string]interface{}{
 							"type":        "string",
 							"description": "File path for screenshot (for 'screenshot' action)",
-						},
-						"full_page": map[string]interface{}{
-							"type":        "boolean",
-							"description": "Capture full page screenshot (for 'screenshot' action, default false)",
-						},
-						"script": map[string]interface{}{
-							"type":        "string",
-							"description": "JavaScript code to execute (for 'evaluate' action)",
 						},
 					},
 					"required": []string{"action"},

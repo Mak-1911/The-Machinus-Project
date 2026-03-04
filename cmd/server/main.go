@@ -113,10 +113,14 @@ func main() {
 	toolMap[httpTool.Name()] = httpTool
 	log.Println("  - HTTP tool enabled")
 
-	// Browser Tool
-	browserTool := tools.NewBrowserTool()
+	// Browser Tool (PinchTab)
+	pinchtabURL := os.Getenv("PINCHTAB_URL")
+	if pinchtabURL == "" {
+		pinchtabURL = "http://localhost:9867"
+	}
+	browserTool := tools.NewPinchTabTool(pinchtabURL)
 	toolMap[browserTool.Name()] = browserTool
-	log.Println("  - Browser tool enabled")
+	log.Println("  - Browser tool enabled (PinchTab)")
 
 	// Add mock tool for testing
 	mockTool := tools.NewMockTool("echo")

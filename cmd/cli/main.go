@@ -220,8 +220,12 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 	// HTTP tool
 	toolMap["http"] = tools.NewHTTPTool(30, 10)
 
-	// Browser tool
-	toolMap["browser"] = tools.NewBrowserTool()
+	// Browser tool (PinchTab)
+	pinchtabURL := os.Getenv("PINCHTAB_URL")
+	if pinchtabURL == "" {
+		pinchtabURL = "http://localhost:9867"
+	}
+	toolMap["browser"] = tools.NewPinchTabTool(pinchtabURL)
 
 	// Mock tool for testing
 	toolMap["echo"] = tools.NewMockTool("echo")
