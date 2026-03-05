@@ -13,6 +13,7 @@ import (
 	"github.com/machinus/cloud-agent/internal/config"
 	"github.com/machinus/cloud-agent/internal/memory"
 	"github.com/machinus/cloud-agent/internal/planner"
+	"github.com/machinus/cloud-agent/internal/skills"
 	"github.com/machinus/cloud-agent/internal/storage"
 	"github.com/machinus/cloud-agent/internal/tools"
 	"github.com/machinus/cloud-agent/internal/types"
@@ -95,7 +96,16 @@ func runSingleShot(cfg *config.Config, message string) {
 	fmt.Printf("  ✓ Tools loaded %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	stepStart = time.Now()
-	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap)
+	skillsLoader := skills.NewLoader(".")
+	if err := skillsLoader.LoadAll(); err != nil {
+		log.Printf("Warning: failed to load skills: %v", err)
+		// Continue without skills
+		skillsLoader = nil
+	}
+	fmt.Printf("  ✓ Skills loaded %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
+
+	stepStart = time.Now()
+	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap, skillsLoader)
 	fmt.Printf("  ✓ Planner ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	var memManager *memory.Manager
@@ -193,7 +203,16 @@ func runInteractive(cfg *config.Config) {
 	fmt.Printf("  ✓ Tools loaded %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	stepStart = time.Now()
-	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap)
+	skillsLoader := skills.NewLoader(".")
+	if err := skillsLoader.LoadAll(); err != nil {
+		log.Printf("Warning: failed to load skills: %v", err)
+		// Continue without skills
+		skillsLoader = nil
+	}
+	fmt.Printf("  ✓ Skills loaded %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
+
+	stepStart = time.Now()
+	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap, skillsLoader)
 	fmt.Printf("  ✓ Planner ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	var memManager *memory.Manager

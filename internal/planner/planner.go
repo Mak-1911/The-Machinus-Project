@@ -3,13 +3,16 @@ package planner
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/machinus/cloud-agent/internal/memory"
+	"github.com/machinus/cloud-agent/internal/skills"
 	"github.com/machinus/cloud-agent/internal/types"
 )
 
@@ -23,12 +26,17 @@ type LLMClient struct {
 
 // Planner generates execution plans using LLM
 type Planner struct {
-	client *LLMClient
-	tools  map[string]types.Tool
+	client           *LLMClient
+	tools            map[string]types.Tool
+	cachedXMLPrompt  *SystemPromptXML  // Cached to avoid repeated file reads
+	skillsLoader     *skills.Loader    // Skills system
 }
 
 // NewPlanner creates a new planner
-func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool) *Planner {
+func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool, skillsLoader *skills.Loader) *Planner {
+	// Pre-load and cache the XML prompt at initialization
+	xmlPrompt := loadSystemPromptXMLStatic()
+
 	return &Planner{
 		client: &LLMClient{
 			BaseURL: baseURL,
@@ -38,7 +46,9 @@ func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool) *Pla
 				Timeout: 120 * time.Second, // Increased to 2 minutes for complex queries
 			},
 		},
-		tools: tools,
+		tools:           tools,
+		cachedXMLPrompt: xmlPrompt, // Cache at startup
+		skillsLoader:    skillsLoader,
 	}
 }
 
@@ -99,6 +109,118 @@ type ConversationMessage struct {
 	Content   string     `json:"content"`   // Message content
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	ToolID    string     `json:"tool_id,omitempty"` // For tool responses
+}
+
+// SystemPromptXML represents the XML structure for system prompts
+type SystemPromptXML struct {
+	XMLName          xml.Name           `xml:"system_prompt"`
+	Role             string             `xml:"role"`
+	ExecutionStrategy ExecutionStrategy  `xml:"execution_strategy"`
+	ToolCallFormat   ToolCallFormat     `xml:"tool_call_format"`
+	ImportantGuidelines ImportantGuidelines `xml:"important_guidelines"`
+	ErrorRecovery    ErrorRecovery      `xml:"error_recovery"`
+	Examples         Examples           `xml:"examples"`
+}
+
+type ExecutionStrategy struct {
+	Steps []Step `xml:"step"`
+}
+
+type Step struct {
+	Order int    `xml:"order,attr"`
+	Text  string `xml:",chardata"`
+}
+
+type ToolCallFormat struct {
+	Description string   `xml:"description"`
+	Example     string   `xml:"example"`
+}
+
+type ImportantGuidelines struct {
+	Guidelines []Guideline `xml:"guideline"`
+}
+
+type Guideline struct {
+	Text string `xml:",chardata"`
+}
+
+type ErrorRecovery struct {
+	Title             string            `xml:"title"`
+	Description       string            `xml:"description"`
+	FailureTypes      FailureTypes      `xml:"failure_types"`
+	RetryStrategies   RetryStrategies   `xml:"retry_strategies"`
+	SuggestedAlternatives SuggestedAlternatives `xml:"suggested_alternatives"`
+	WhenToStop        WhenToStop        `xml:"when_to_stop"`
+	TransparentCommunication TransparentCommunication `xml:"transparent_communication"`
+	ExecutionHistory  ExecutionHistory  `xml:"execution_history"`
+}
+
+type FailureTypes struct {
+	Types []FailureType `xml:"type"`
+}
+
+type FailureType struct {
+	Name     string   `xml:"name,attr"`
+	Description string `xml:"description"`
+	Examples string   `xml:"examples"`
+}
+
+type RetryStrategies struct {
+	Strategies []RetryStrategy `xml:"strategy"`
+}
+
+type RetryStrategy struct {
+	Name      string    `xml:"name,attr"`
+	Description string `xml:"description"`
+	Attempts  []Attempt `xml:"attempts>attempt"`
+	Fallback  string    `xml:"fallback"`
+	Message   string    `xml:"message"`
+}
+
+type Attempt struct {
+	Number string `xml:"number,attr"`
+	Text   string `xml:",chardata"`
+}
+
+type SuggestedAlternatives struct {
+	Alternatives []Alternative `xml:"alternative"`
+}
+
+type Alternative struct {
+	Text string `xml:",chardata"`
+}
+
+type WhenToStop struct {
+	Rules []Rule `xml:"rule"`
+}
+
+type Rule struct {
+	Text string `xml:",chardata"`
+}
+
+type TransparentCommunication struct {
+	Description string   `xml:"description"`
+	Examples    []Example `xml:"examples>example"`
+}
+
+type ExecutionHistory struct {
+	Description string `xml:"description"`
+	Items       []Item  `xml:"item"`
+}
+
+type Item struct {
+	Text string `xml:",chardata"`
+}
+
+type Examples struct {
+	Examples []Example `xml:"example"`
+}
+
+type Example struct {
+	User      string `xml:"user"`
+	Response  string `xml:"response"`
+	Attempt   string `xml:"attempt"`
+	Text      string `xml:",chardata"`
 }
 
 // Plan generates a plan from the user's message
@@ -298,6 +420,315 @@ func (p *Planner) Continue(ctx context.Context, messages []ConversationMessage, 
 }
 
 func (p *Planner) buildSystemPrompt(tools []ToolDef) string {
+	// Use cached XML prompt if available, otherwise fallback
+	if p.cachedXMLPrompt != nil {
+		return p.buildPromptFromXML(p.cachedXMLPrompt, tools)
+	}
+
+	// Fallback to hardcoded prompt if XML not cached
+	return p.buildFallbackSystemPrompt(tools)
+}
+
+// loadSystemPromptXMLStatic loads and parses the system prompt XML file (static version for initialization)
+func loadSystemPromptXMLStatic() *SystemPromptXML {
+	// Try multiple possible paths
+	paths := []string{
+		"prompts/agent_system.xml",
+		"./prompts/agent_system.xml",
+		"../prompts/agent_system.xml",
+	}
+
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			var prompt SystemPromptXML
+			if err := xml.Unmarshal(data, &prompt); err == nil {
+				return &prompt
+			}
+		}
+	}
+
+	// Return nil if loading fails - will use hardcoded fallback
+	return nil
+}
+
+// buildPromptFromXML builds the system prompt from cached XML
+func (p *Planner) buildPromptFromXML(xmlPrompt *SystemPromptXML, tools []ToolDef) string {
+	var prompt strings.Builder
+
+	// Role
+	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.Role))
+
+	// Tools section
+	prompt.WriteString("# Available Tools\n")
+	for _, tool := range tools {
+		// Get the actual tool instance to access metadata
+		toolInstance, exists := p.tools[tool.Function.Name]
+		if exists {
+			// Include rich metadata
+			examples := toolInstance.Examples()
+			whenToUse := toolInstance.WhenToUse()
+			chainsWith := toolInstance.ChainsWith()
+
+			prompt.WriteString(fmt.Sprintf("\n## %s\n", tool.Function.Name))
+			prompt.WriteString(fmt.Sprintf("Description: %s\n", tool.Function.Description))
+
+			if whenToUse != "" {
+				prompt.WriteString(fmt.Sprintf("When to use: %s\n", whenToUse))
+			}
+
+			if len(chainsWith) > 0 {
+				prompt.WriteString(fmt.Sprintf("Works well with: %s\n", strings.Join(chainsWith, ", ")))
+			}
+
+			if len(examples) > 0 {
+				prompt.WriteString("Examples:\n")
+				for i, example := range examples {
+					prompt.WriteString(fmt.Sprintf("  %d. %s\n", i+1, example.Description))
+					// Format args as JSON
+					if argsJSON, err := json.Marshal(example.Input); err == nil {
+						prompt.WriteString(fmt.Sprintf("     Args: %s\n", string(argsJSON)))
+					}
+				}
+			}
+			prompt.WriteString("\n")
+		} else {
+			// Fallback if tool instance not found
+			prompt.WriteString(fmt.Sprintf("- %s: %s\n", tool.Function.Name, tool.Function.Description))
+		}
+	}
+
+	// Skills section (NEW)
+	if p.skillsLoader != nil {
+		prompt.WriteString("\n# Available Skills\n")
+		prompt.WriteString(p.skillsLoader.GetAvailableSkillsXML())
+		prompt.WriteString("\n")
+	}
+
+	// Execution Strategy
+	prompt.WriteString("\n# Execution Strategy\n")
+	for _, step := range xmlPrompt.ExecutionStrategy.Steps {
+		prompt.WriteString(fmt.Sprintf("%d. %s\n", step.Order, step.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Tool Call Format
+	prompt.WriteString("# Tool Call Format\n")
+	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ToolCallFormat.Description))
+	prompt.WriteString(xmlPrompt.ToolCallFormat.Example)
+	prompt.WriteString("\n")
+
+	// Important Guidelines
+	prompt.WriteString("# Important\n")
+	for _, guideline := range xmlPrompt.ImportantGuidelines.Guidelines {
+		prompt.WriteString(fmt.Sprintf("- %s\n", guideline.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Error Recovery Section
+	prompt.WriteString(fmt.Sprintf("## %s\n", xmlPrompt.ErrorRecovery.Title))
+	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.ErrorRecovery.Description))
+
+	// Failure Types
+	prompt.WriteString("### 1. Identify Failure Type\n")
+	prompt.WriteString("Tool errors include metadata about the failure type:\n")
+	for _, ft := range xmlPrompt.ErrorRecovery.FailureTypes.Types {
+		prompt.WriteString(fmt.Sprintf("- %s: %s\n", ft.Name, ft.Description))
+		if ft.Examples != "" {
+			prompt.WriteString(fmt.Sprintf("  %s\n", ft.Examples))
+		}
+	}
+	prompt.WriteString("\n")
+
+	// Retry Strategies
+	prompt.WriteString("### 2. Adaptive Retry Strategies\n")
+	prompt.WriteString("Don't just repeat the same call - adapt:\n\n")
+	for _, strategy := range xmlPrompt.ErrorRecovery.RetryStrategies.Strategies {
+		prompt.WriteString(fmt.Sprintf("%s: %s\n", strings.Title(strategy.Name), strategy.Description))
+		for _, attempt := range strategy.Attempts {
+			prompt.WriteString(fmt.Sprintf("- %s\n", attempt.Text))
+		}
+		if strategy.Fallback != "" {
+			prompt.WriteString(fmt.Sprintf("Fallback: %s\n", strategy.Fallback))
+		}
+		if strategy.Message != "" {
+			prompt.WriteString(fmt.Sprintf("Message: \"%s\"\n", strategy.Message))
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Suggested Alternatives
+	prompt.WriteString("### 3. Suggested Alternatives\n")
+	prompt.WriteString("When tools fail, they may suggest alternatives:\n")
+	for _, alt := range xmlPrompt.ErrorRecovery.SuggestedAlternatives.Alternatives {
+		prompt.WriteString(fmt.Sprintf("- %s\n", alt.Text))
+	}
+	prompt.WriteString("\n")
+
+	// When to Stop
+	prompt.WriteString("### 4. Know When to Stop\n")
+	for _, rule := range xmlPrompt.ErrorRecovery.WhenToStop.Rules {
+		prompt.WriteString(fmt.Sprintf("- %s\n", rule.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Transparent Communication
+	prompt.WriteString("### 5. Transparent Communication\n")
+	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.TransparentCommunication.Description))
+	prompt.WriteString("Examples:\n")
+	for _, ex := range xmlPrompt.ErrorRecovery.TransparentCommunication.Examples {
+		prompt.WriteString(fmt.Sprintf("- \"%s\"\n", ex.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Execution History
+	prompt.WriteString("### 6. Use Execution History\n")
+	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.ExecutionHistory.Description))
+	for _, item := range xmlPrompt.ErrorRecovery.ExecutionHistory.Items {
+		prompt.WriteString(fmt.Sprintf("- %s\n", item.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Examples
+	prompt.WriteString("# Examples\n")
+	for _, ex := range xmlPrompt.Examples.Examples {
+		if ex.User != "" {
+			prompt.WriteString(fmt.Sprintf("User: \"%s\"\n", ex.User))
+			if ex.Response != "" {
+				prompt.WriteString(fmt.Sprintf("You: %s\n", ex.Response))
+			}
+		}
+		if ex.Attempt != "" {
+			prompt.WriteString(fmt.Sprintf("%s\n", ex.Attempt))
+		}
+		if ex.Text != "" {
+			prompt.WriteString(fmt.Sprintf("%s\n", ex.Text))
+		}
+		prompt.WriteString("\n")
+	}
+
+	return prompt.String()
+}
+
+// formatXMLPrompt formats the loaded XML prompt with tool list
+func (p *Planner) formatXMLPrompt(xmlPrompt *SystemPromptXML, toolList string) string {
+	var prompt strings.Builder
+
+	// Role
+	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.Role))
+
+	// Tools section
+	prompt.WriteString("# Available Tools\n")
+	prompt.WriteString(toolList)
+	prompt.WriteString("\n")
+
+	// Execution Strategy
+	prompt.WriteString("# Execution Strategy\n")
+	for _, step := range xmlPrompt.ExecutionStrategy.Steps {
+		prompt.WriteString(fmt.Sprintf("%d. %s\n", step.Order, step.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Tool Call Format
+	prompt.WriteString("# Tool Call Format\n")
+	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ToolCallFormat.Description))
+	prompt.WriteString(xmlPrompt.ToolCallFormat.Example)
+	prompt.WriteString("\n")
+
+	// Important Guidelines
+	prompt.WriteString("# Important\n")
+	for _, guideline := range xmlPrompt.ImportantGuidelines.Guidelines {
+		prompt.WriteString(fmt.Sprintf("- %s\n", guideline.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Error Recovery Section
+	prompt.WriteString(fmt.Sprintf("## %s\n", xmlPrompt.ErrorRecovery.Title))
+	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.ErrorRecovery.Description))
+
+	// Failure Types
+	prompt.WriteString("### 1. Identify Failure Type\n")
+	prompt.WriteString("Tool errors include metadata about the failure type:\n")
+	for _, ft := range xmlPrompt.ErrorRecovery.FailureTypes.Types {
+		prompt.WriteString(fmt.Sprintf("- %s: %s\n", ft.Name, ft.Description))
+		if ft.Examples != "" {
+			prompt.WriteString(fmt.Sprintf("  %s\n", ft.Examples))
+		}
+	}
+	prompt.WriteString("\n")
+
+	// Retry Strategies
+	prompt.WriteString("### 2. Adaptive Retry Strategies\n")
+	prompt.WriteString("Don't just repeat the same call - adapt:\n\n")
+	for _, strategy := range xmlPrompt.ErrorRecovery.RetryStrategies.Strategies {
+		prompt.WriteString(fmt.Sprintf("%s: %s\n", strings.Title(strategy.Name), strategy.Description))
+		for _, attempt := range strategy.Attempts {
+			prompt.WriteString(fmt.Sprintf("- %s\n", attempt.Text))
+		}
+		if strategy.Fallback != "" {
+			prompt.WriteString(fmt.Sprintf("Fallback: %s\n", strategy.Fallback))
+		}
+		if strategy.Message != "" {
+			prompt.WriteString(fmt.Sprintf("Message: \"%s\"\n", strategy.Message))
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Suggested Alternatives
+	prompt.WriteString("### 3. Suggested Alternatives\n")
+	prompt.WriteString("When tools fail, they may suggest alternatives:\n")
+	for _, alt := range xmlPrompt.ErrorRecovery.SuggestedAlternatives.Alternatives {
+		prompt.WriteString(fmt.Sprintf("- %s\n", alt.Text))
+	}
+	prompt.WriteString("\n")
+
+	// When to Stop
+	prompt.WriteString("### 4. Know When to Stop\n")
+	for _, rule := range xmlPrompt.ErrorRecovery.WhenToStop.Rules {
+		prompt.WriteString(fmt.Sprintf("- %s\n", rule.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Transparent Communication
+	prompt.WriteString("### 5. Transparent Communication\n")
+	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.TransparentCommunication.Description))
+	prompt.WriteString("Examples:\n")
+	for _, ex := range xmlPrompt.ErrorRecovery.TransparentCommunication.Examples {
+		prompt.WriteString(fmt.Sprintf("- \"%s\"\n", ex.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Execution History
+	prompt.WriteString("### 6. Use Execution History\n")
+	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.ExecutionHistory.Description))
+	for _, item := range xmlPrompt.ErrorRecovery.ExecutionHistory.Items {
+		prompt.WriteString(fmt.Sprintf("- %s\n", item.Text))
+	}
+	prompt.WriteString("\n")
+
+	// Examples
+	prompt.WriteString("# Examples\n")
+	for _, ex := range xmlPrompt.Examples.Examples {
+		if ex.User != "" {
+			prompt.WriteString(fmt.Sprintf("User: \"%s\"\n", ex.User))
+			if ex.Response != "" {
+				prompt.WriteString(fmt.Sprintf("You: %s\n", ex.Response))
+			}
+		}
+		if ex.Attempt != "" {
+			prompt.WriteString(fmt.Sprintf("%s\n", ex.Attempt))
+		}
+		if ex.Text != "" {
+			prompt.WriteString(fmt.Sprintf("%s\n", ex.Text))
+		}
+		prompt.WriteString("\n")
+	}
+
+	return prompt.String()
+}
+
+// buildFallbackSystemPrompt returns the hardcoded prompt as fallback
+func (p *Planner) buildFallbackSystemPrompt(tools []ToolDef) string {
 	var toolList strings.Builder
 	for _, tool := range tools {
 		// Get the actual tool instance to access metadata

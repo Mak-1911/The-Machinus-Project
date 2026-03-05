@@ -12,6 +12,7 @@ import (
 	"github.com/machinus/cloud-agent/internal/config"
 	"github.com/machinus/cloud-agent/internal/memory"
 	"github.com/machinus/cloud-agent/internal/planner"
+	"github.com/machinus/cloud-agent/internal/skills"
 	"github.com/machinus/cloud-agent/internal/storage"
 	"github.com/machinus/cloud-agent/internal/tools"
 	"github.com/machinus/cloud-agent/internal/types"
@@ -127,9 +128,18 @@ func main() {
 	toolMap[mockTool.Name()] = mockTool
 	log.Println("  - Mock tool enabled")
 
+	// Initialize skills system
+	log.Println("Initializing skills system...")
+	skillsLoader := skills.NewLoader(".")
+	if err := skillsLoader.LoadAll(); err != nil {
+		log.Printf("Warning: failed to load skills: %v", err)
+		// Continue without skills
+		skillsLoader = nil
+	}
+
 	// Initialize planner
 	log.Println("Initializing planner...")
-	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap)
+	p := planner.NewPlanner(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, toolMap, skillsLoader)
 
 	// Initialize memory manager
 	var memManager *memory.Manager

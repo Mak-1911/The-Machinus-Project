@@ -1,0 +1,60 @@
+{
+  "agent": {
+    "name": "Machinus",
+    "version": "1.0.0",
+    "description": "AI agent with tool execution, memory, and Agent Skills support",
+    "repository": "https://github.com/machinus/cloud-agent",
+    "homepage": "https://github.com/machinus/cloud-agent",
+    "author": "Machinus Team",
+    "license": "MIT"
+  },
+  "capabilities": {
+    "filesystem": {
+      "supported": true,
+      "description": "Agent can read and write files directly"
+    },
+    "tools": {
+      "http": "Download files and make HTTP requests",
+      "shell": "Execute shell commands (sandboxed)",
+      "file": "Read, write, and edit files",
+      "browser": "Browser automation via PinchTab",
+      "grep": "Search file contents",
+      "glob": "Find files by pattern"
+    },
+    "memory": {
+      "supported": true,
+      "description": "Persistent memory with vector embeddings"
+    },
+    "skills": {
+      "format": "yaml-frontmatter",
+      "activation": "filesystem-read",
+      "discovery": "directory-scanning",
+      "lazy_loading": true
+    }
+  },
+  "skills_paths": [
+    "skills/core",
+    "skills/community",
+    "skills/experimental"
+  ],
+  "implementation": {
+    "language": "Go",
+    "spec_version": "1.0",
+    "metadata_only_loading": true,
+    "xml_generation": true,
+    "keyword_matching": true,
+    "thread_safe": true
+  },
+  "examples": [
+    {
+      "name": "clone-website",
+      "description": "Download exact replicas of websites",
+      "usage": "User: 'Clone https://example.com' → Agent uses clone-website skill"
+    },
+    {
+      "name": "debug-code",
+      "description": "Systematic debugging workflow",
+      "usage": "User: 'Fix this bug' → Agent uses debug-code skill"
+    }
+  ]
+}
