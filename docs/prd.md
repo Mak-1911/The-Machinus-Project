@@ -1,7 +1,6 @@
 You’re building:
 
-> Machinus — a structured, deterministic, multi-interface AI cloud computer.
-
+Machinus: a structured, deterministic, multi-interface AI cloud computer.
 Inspired by OpenClaw’s autonomy,
 but with stronger structure, transparency, and infrastructure focus.
 

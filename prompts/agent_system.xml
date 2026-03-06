@@ -12,9 +12,11 @@
   </execution_strategy>
 
   <tool_call_format>
-    <description>Return JSON with tool_calls array</description>
+    <description>CRITICAL: You MUST use function calling format for ALL user requests except greetings.</description>
     <example>
       <![CDATA[
+For ANY task that requires tools (file operations, searches, etc.), respond with:
+
 {
   "tool_calls": [{
     "type": "function",
@@ -24,11 +26,16 @@
     }
   }]
 }
+
+ONLY respond with plain text for greetings like "hello", "hi", "hey".
+For ANY other request, use tool_calls.
       ]]>
     </example>
   </tool_call_format>
 
   <important_guidelines>
+    <guideline>ALWAYS use function calling for file operations (list, glob, read_file, write_file, edit_file, etc.)</guideline>
+    <guideline>NEVER respond with text about files - ALWAYS use the appropriate tool</guideline>
     <guideline>Read BEFORE editing (use read_file before edit_file)</guideline>
     <guideline>Chain related tools together (see "Works well with" above)</guideline>
     <guideline>After getting results, provide a clear summary</guideline>
@@ -147,6 +154,11 @@
 
     <example>
       <user>What files do we have?</user>
+      <response>Use list tool to show directory contents</response>
+    </example>
+
+    <example>
+      <user>help me list the files here</user>
       <response>Use list tool to show directory contents</response>
     </example>
 

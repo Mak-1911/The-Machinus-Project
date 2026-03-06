@@ -40,8 +40,10 @@ type Config struct {
 // Load loads configuration from environment variables with sensible defaults
 // Automatically loads .env file if it exists
 func Load() *Config {
-	// Try to load .env file (ignore error if file doesn't exist)
-	_ = godotenv.Load()
+	// Try to load .env file from multiple locations (ignore error if file doesn't exist)
+	_ = godotenv.Load() // Current directory
+	_ = godotenv.Load("../.env") // Parent directory
+	_ = godotenv.Load("../../.env") // Two levels up
 
 	return &Config{
 		Host:              getEnv("HOST", "0.0.0.0"),
