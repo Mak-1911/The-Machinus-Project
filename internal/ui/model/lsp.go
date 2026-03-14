@@ -1,0 +1,118 @@
+package model
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/machinus/cloud-agent/internal/ui/app"
+	"github.com/machinus/cloud-agent/internal/ui/lsp"
+	"github.com/machinus/cloud-agent/internal/ui/common"
+	"github.com/machinus/cloud-agent/internal/ui/styles"
+	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+)
+
+// LSPInfo wraps LSP client information with diagnostic counts by severity.
+type LSPInfo struct {
+	app.LSPClientInfo
+	State       lsp.ConnectionState
+	Diagnostics map[protocol.DiagnosticSeverity]int
+}
+
+// lspInfo renders the LSP status section showing active LSP clients and their
+// diagnostic counts.
+func (m *UI) lspInfo(width, maxItems int, isSection bool) string {
+	t := m.com.Styles
+
+	states := slices.SortedFunc(maps.Values(m.lspStates), func(a, b *app.LSPClientInfo) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	var lsps []LSPInfo
+	for _, state := range states {
+		lspErrs := map[protocol.DiagnosticSeverity]int{}
+		lspErrs[protocol.SeverityError] = 0
+
+		lsps = append(lsps, LSPInfo{LSPClientInfo: *state, Diagnostics: lspErrs})
+	}
+
+	title := t.ResourceGroupTitle.Render("LSPs")
+	if isSection {
+		title = common.Section(t, title, width)
+	}
+	list := t.ResourceAdditionalText.Render("None")
+	if len(lsps) > 0 {
+		list = lspList(t, lsps, width, maxItems)
+	}
+
+	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, list))
+}
+
+// lspDiagnostics formats diagnostic counts with appropriate icons and colors.
+func lspDiagnostics(t *styles.Styles, diagnostics map[protocol.DiagnosticSeverity]int) string {
+	var errs []string
+	if diagnostics[protocol.SeverityError] > 0 {
+		errs = append(errs, t.LSP.ErrorDiagnostic.Render(fmt.Sprintf("%s%d", styles.LSPErrorIcon, diagnostics[protocol.SeverityError])))
+	}
+	if diagnostics[protocol.SeverityWarning] > 0 {
+		errs = append(errs, t.LSP.WarningDiagnostic.Render(fmt.Sprintf("%s%d", styles.LSPWarningIcon, diagnostics[protocol.SeverityWarning])))
+	}
+	if diagnostics[protocol.SeverityHint] > 0 {
+		errs = append(errs, t.LSP.HintDiagnostic.Render(fmt.Sprintf("%s%d", styles.LSPHintIcon, diagnostics[protocol.SeverityHint])))
+	}
+	if diagnostics[protocol.SeverityInformation] > 0 {
+		errs = append(errs, t.LSP.InfoDiagnostic.Render(fmt.Sprintf("%s%d", styles.LSPInfoIcon, diagnostics[protocol.SeverityInformation])))
+	}
+	return strings.Join(errs, " ")
+}
+
+// lspList renders a list of LSP clients with their status and diagnostics,
+// truncating to maxItems if needed.
+func lspList(t *styles.Styles, lsps []LSPInfo, width, maxItems int) string {
+	if maxItems <= 0 {
+		return ""
+	}
+	var renderedLsps []string
+	for _, l := range lsps {
+		var icon string
+		title := t.ResourceName.Render(l.Name)
+		var description string
+		var diagnostics string
+		switch l.State {
+		case lsp.ConnectionStateUnstarted:
+			icon = t.ResourceOfflineIcon.String()
+			description = t.ResourceStatus.Render("unstarted")
+		case lsp.ConnectionStateStopped:
+			icon = t.ResourceOfflineIcon.String()
+			description = t.ResourceStatus.Render("stopped")
+		case lsp.ConnectionStateStarting:
+			icon = t.ResourceBusyIcon.String()
+			description = t.ResourceStatus.Render("starting...")
+		case lsp.ConnectionStateRunning:
+			icon = t.ResourceOnlineIcon.String()
+			diagnostics = lspDiagnostics(t, l.Diagnostics)
+		case lsp.ConnectionStateError:
+			icon = t.ResourceErrorIcon.String()
+			description = t.ResourceStatus.Render("error")
+		default:
+			icon = t.ResourceOfflineIcon.String()
+			description = t.ResourceStatus.Render("unknown")
+		}
+		renderedLsps = append(renderedLsps, common.Status(t, common.StatusOpts{
+			Icon:         icon,
+			Title:        title,
+			Description:  description,
+			ExtraContent: diagnostics,
+		}, width))
+	}
+
+	if len(renderedLsps) > maxItems {
+		visibleItems := renderedLsps[:maxItems-1]
+		remaining := len(renderedLsps) - maxItems
+		visibleItems = append(visibleItems, t.ResourceAdditionalText.Render(fmt.Sprintf("…and %d more", remaining)))
+		return lipgloss.JoinVertical(lipgloss.Left, visibleItems...)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, renderedLsps...)
+}

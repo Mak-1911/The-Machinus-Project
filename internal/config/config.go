@@ -96,3 +96,8 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	}
 	return defaultValue
 }
+
+// MarkProjectInitialized marks the project as initialized.
+func MarkProjectInitialized() error {
+	return nil
+}

@@ -85,6 +85,36 @@ type agentLogMsg struct {
 	step    int
 }
 
+// sanitizeOutput removes non-printable characters from output
+func sanitizeOutput(s string) string {
+	// Check if content appears to be binary
+	binaryCount := 0
+	for _, r := range s {
+		// Count non-printable characters (excluding whitespace)
+		if r < 32 && r != '\n' && r != '\r' && r != '\t' {
+			binaryCount++
+		}
+		// Count extended ASCII characters that might be binary
+		if r > 126 && r < 128 {
+			binaryCount++
+		}
+	}
+
+	// If more than 10% non-printable, treat as binary
+	if len(s) > 0 && float64(binaryCount)/float64(len(s)) > 0.1 {
+		return "(binary content filtered)"
+	}
+
+	// Otherwise, just remove non-printable characters
+	var result strings.Builder
+	for _, r := range s {
+		if (r >= 32 && r <= 126) || r == '\n' || r == '\r' || r == '\t' {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
+}
+
 // FormatMessage formats a log message for display
 func (m agentLogMsg) FormatMessage() string {
 	timestamp := time.Now().Format("15:04:05")
@@ -103,6 +133,8 @@ func (m agentLogMsg) FormatMessage() string {
 		parts := strings.SplitN(m.message, "Output:", 2)
 		if len(parts) == 2 {
 			output := strings.TrimSpace(parts[1])
+			// Sanitize output to remove binary content
+			output = sanitizeOutput(output)
 			// Truncate very long output
 			if len(output) > 300 {
 				output = output[:300] + "..."

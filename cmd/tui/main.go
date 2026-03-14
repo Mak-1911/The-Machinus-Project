@@ -4,13 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/machinus/cloud-agent/internal/agent"
 	"github.com/machinus/cloud-agent/internal/config"
@@ -20,67 +16,59 @@ import (
 	"github.com/machinus/cloud-agent/internal/storage"
 	"github.com/machinus/cloud-agent/internal/tools"
 	"github.com/machinus/cloud-agent/internal/types"
+	uiModel "github.com/machinus/cloud-agent/internal/ui/model"
+	"github.com/machinus/cloud-agent/internal/ui/common"
+	"github.com/machinus/cloud-agent/internal/ui/app"
 )
 
 // ============================================
-// STYLES
+// APP ADAPTER
 // ============================================
 
-var (
-	primaryColor     = lipgloss.Color("86BBD8")  // Light blue
-	userColor        = lipgloss.Color("A6E3A1")  // Green
-	assistantColor   = lipgloss.Color("CDD6F4") // Light gray
-	mutedColor       = lipgloss.Color("6C7086")  // Muted gray
-	borderColor      = lipgloss.Color("45475A")  // Border gray
-	errorColor       = lipgloss.Color("F38BA8")  // Red
-	toolColor        = lipgloss.Color("F9E2AF")  // Yellow
-	toolExecColor    = lipgloss.Color("89B4FA")  // Blue
-	logColor         = lipgloss.Color("FAB387")  // Orange
+// appAdapter wraps the actual app.App interface
+type appAdapter struct {
+	*app.App
+	cfg *config.Config
+}
 
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(primaryColor)
-	userMsgStyle     = lipgloss.NewStyle().Foreground(userColor).Bold(true)
-	assistantMsgStyle = lipgloss.NewStyle().Foreground(assistantColor).Bold(true)
-	assistantContentStyle = lipgloss.NewStyle().Foreground(assistantColor)
-	helpStyle         = lipgloss.NewStyle().Foreground(mutedColor)
-	borderStyle       = lipgloss.NewStyle().Foreground(borderColor)
-	errorStyle        = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
-	processingStyle   = lipgloss.NewStyle().Foreground(mutedColor).Italic(true)
-	toolExecTitleStyle = lipgloss.NewStyle().Foreground(toolExecColor).Bold(true)
-	toolNameStyle     = lipgloss.NewStyle().Foreground(toolColor)
-	logStyle          = lipgloss.NewStyle().Foreground(logColor)
-)
+func newAppAdapter(cfg *config.Config) *appAdapter {
+	return &appAdapter{
+		App: app.New(cfg),
+		cfg: cfg,
+	}
+}
 
 // ============================================
-// CUSTOM MESSAGES
+// MESSAGES
 // ============================================
 
 type (
+	// initializationCompleteMsg is sent when agent initialization is complete
 	initializationCompleteMsg struct {
 		orch      *agent.Orchestrator
 		store     *storage.SQLiteStore
-		logWriter *TUILogWriter
+		cfg       *config.Config
+		sessionID string
 		err       error
 	}
 
+	// agentResponseMsg is sent when the agent completes a task
 	agentResponseMsg struct {
 		task *agent.Task
 		err  error
 	}
 
-	statusUpdateMsg struct {
-		message string
-	}
+	// agentTickMsg is used to periodically check for agent log messages
+	agentTickMsg struct{}
 )
 
 // ============================================
-// MODEL
+// MAIN MODEL
 // ============================================
 
-type model struct {
-	viewport  viewport.Model
-	textinput textinput.Model
-	messages []message
-
+// mainModel wraps the UI model with agent integration
+type mainModel struct {
+	ui             *uiModel.UI
 	ctx            context.Context
 	cfg            *config.Config
 	store          *storage.SQLiteStore
@@ -88,25 +76,16 @@ type model struct {
 	sessionManager *agent.SessionManager
 	sessionID      string
 	userID         string
-	logWriter      *TUILogWriter
-	logChan        chan agentLogMsg
 
 	ready   bool
-	width   int
-	height  int
 	loading bool
-}
-
-type message struct {
-	role    string // "user", "assistant", "system", "error", "log"
-	content string
 }
 
 // ============================================
 // INITIALIZATION COMMAND
 // ============================================
 
-func initializeAgentCmd(logChan chan agentLogMsg) tea.Cmd {
+func initializeAgentCmd() tea.Cmd {
 	return func() tea.Msg {
 		cfg := config.Load()
 		ctx := context.Background()
@@ -144,273 +123,126 @@ func initializeAgentCmd(logChan chan agentLogMsg) tea.Cmd {
 			sessionID = session.ID
 		}
 
-		// Use TUI log writer for real-time updates
-		logWriter := NewTUILogWriter(logChan)
-
-		orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, sessionID)
+		orch := agent.NewOrchestrator(p, toolMap, memManager, store, nil, sessionMgr, sessionID)
 
 		return initializationCompleteMsg{
 			orch:      orch,
 			store:     store,
-			logWriter: logWriter,
+			cfg:       cfg,
+			sessionID: sessionID,
 			err:       nil,
 		}
 	}
 }
 
-func executeAgentCmd(orch *agent.Orchestrator, logWriter *TUILogWriter, userID, message string, sessionID string) tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-		logWriter.SetTaskID(userID) // Set task ID for log filtering
-		task, err := orch.Execute(ctx, userID, message)
-		return agentResponseMsg{task: task, err: err}
-	}
-}
-
 // ============================================
-// INIT
+// MODEL INITIALIZATION
 // ============================================
 
-func initialModel() model {
-	ti := textinput.New()
-	ti.Placeholder = "Type a message..."
-	ti.Focus()
-	ti.Prompt = "❯ "
-	ti.CharLimit = -1
-	ti.Width = 0
+func initialModel() mainModel {
+	// Load config for UI initialization
+	cfg := config.Load()
 
-	vp := viewport.New(0, 0)
+	// Create app adapter
+	appAdapter := newAppAdapter(cfg)
 
-	logChan := make(chan agentLogMsg, 100)
+	// Create common UI context
+	com := common.DefaultCommon(appAdapter.App)
 
-	return model{
-		textinput: ti,
-		viewport:  vp,
-		messages: []message{
-			{
-				role:    "system",
-				content: "Initializing Machinus Agent...",
-			},
-		},
+	// Create the UI model
+	ui := uiModel.New(com)
+
+	return mainModel{
+		ui:       ui,
 		ctx:      context.Background(),
-		logChan:  logChan,
+		cfg:      cfg,
 		loading:  true,
 		userID:   "cli-user",
 	}
 }
 
-func (m model) Init() tea.Cmd {
-	return initializeAgentCmd(m.logChan)
+func (m mainModel) Init() tea.Cmd {
+	// Initialize the UI first (load commands, history, etc.)
+	uiCmd := m.ui.Init()
+	return tea.Batch(
+		initializeAgentCmd(),
+		uiCmd,
+	)
 }
 
 // ============================================
-// UPDATE
+// MODEL UPDATE
 // ============================================
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
+func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case initializationCompleteMsg:
 		m.loading = false
 		if msg.err != nil {
-			m.messages = append(m.messages, message{
-				role:    "error",
-				content: fmt.Sprintf("Failed to initialize: %v", msg.err),
-			})
-			return m, nil
+			fmt.Printf("Initialization error: %v\n", msg.err)
+			return m, tea.Quit
 		}
 
 		m.orch = msg.orch
 		m.store = msg.store
-		m.logWriter = msg.logWriter
+		m.cfg = msg.cfg
+		m.sessionID = msg.sessionID
 		m.ready = true
-		m.messages = append(m.messages, message{
-			role:    "system",
-			content: "✓ Machinus Agent ready! Type your message to start.",
-		})
-		m.updateViewport()
-
-		// Start listening for log messages
-		return m, waitForLogMsg(m.logChan)
-
-	case agentLogMsg:
-		// Display real-time log message
-		m.messages = append(m.messages, message{
-			role:    "log",
-			content: msg.FormatMessage(),
-		})
-		m.updateViewport()
-
-		// Continue listening for more logs
-		return m, waitForLogMsg(m.logChan)
 
 	case agentResponseMsg:
 		m.loading = false
-
 		if msg.err != nil {
-			m.messages = append(m.messages, message{
-				role:    "error",
-				content: fmt.Sprintf("Error: %v", msg.err),
-			})
-		} else {
-			// Show final response
-			if msg.task.Response != "" {
-				m.messages = append(m.messages, message{
-					role:    "assistant",
-					content: msg.task.Response,
-				})
-			}
+			// Handle error - UI will display it
+		} else if msg.task.Response != "" {
+			// Response will be shown in UI
 		}
 
-		m.updateViewport()
-		m.textinput.Focus()
-		return m, nil
-
-	case statusUpdateMsg:
-		// No-op, just keep the ticker going
-		return m, waitForLogMsg(m.logChan)
+	case agentTickMsg:
+		// Keep the tick going for updates
+		cmds = append(cmds, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+			return agentTickMsg{}
+		}))
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
+		// Handle quit globally
+		if msg.String() == "ctrl+c" {
 			if m.store != nil {
 				m.store.Close()
 			}
 			return m, tea.Quit
+		}
+	}
 
-		case "enter":
-			if m.textinput.Value() != "" && !m.loading && m.ready {
-				input := m.textinput.Value()
-				m.textinput.Reset()
+	// Update the UI model
+	newUI, uiCmd := m.ui.Update(msg)
+	m.ui = newUI.(*uiModel.UI)
+	if uiCmd != nil {
+		cmds = append(cmds, uiCmd)
+	}
 
-				m.messages = append(m.messages, message{
-					role:    "user",
-					content: input,
-				})
-				m.updateViewport()
+	return m, tea.Batch(cmds...)
+}
 
-				m.loading = true
-				m.messages = append(m.messages, message{
-					role:    "system",
-					content: "⏳ Processing...",
-				})
-				m.updateViewport()
+// ============================================
+// MODEL VIEW
+// ============================================
 
-				return m, executeAgentCmd(m.orch, m.logWriter, m.userID, input, m.sessionID)
+func (m mainModel) View() tea.View {
+	if !m.ready {
+		if m.loading {
+			return tea.View{
+				Content: "\n  ⏳ Initializing Machinus Agent...",
 			}
 		}
-
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-
-		m.viewport.Width = msg.Width - 4
-		m.viewport.Height = msg.Height - 5
-		m.textinput.Width = msg.Width - 6
-
-		if !m.ready && !m.loading {
-			m.updateViewport()
-		}
-		return m, nil
-	}
-
-	if !m.loading {
-		m.textinput, cmd = m.textinput.Update(msg)
-	}
-
-	m.viewport, cmd = m.viewport.Update(msg)
-
-	return m, cmd
-}
-
-// waitForLogMsg creates a command that waits for log messages
-func waitForLogMsg(logChan chan agentLogMsg) tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-		select {
-		case logMsg := <-logChan:
-			return logMsg
-		default:
-			return statusUpdateMsg{} // No-op, keep checking
-		}
-	})
-}
-
-// ============================================
-// VIEW
-// ============================================
-
-func (m model) View() string {
-	if !m.ready && m.loading {
-		return "\n  Initializing Machinus Agent..."
-	}
-
-	title := titleStyle.Render(" Machinus Agent ")
-	title += strings.Repeat("─", m.width-lipgloss.Width(title)-2)
-	title += borderStyle.Render("╮")
-
-	messages := m.viewport.View()
-	messages = borderStyle.Render("") + messages + borderStyle.Render("")
-
-	inputTop := borderStyle.Render("") + strings.Repeat("─", m.width) + borderStyle.Render("")
-
-	inputText := m.textinput.View()
-
-	bottom := borderStyle.Render("") + strings.Repeat("─", m.width) + borderStyle.Render("")
-
-	helpText := "  Enter: send | Ctrl+C: quit"
-	if m.loading {
-		helpText = "  ⏳ Processing... | Ctrl+C: quit"
-	}
-	help := helpStyle.Render(helpText)
-
-	return fmt.Sprintf(
-		"%s\n%s\n%s\n%s\n%s\n%s\n%s",
-		title,
-		messages,
-		inputTop,
-		inputText,
-		bottom,
-		help,
-	)
-}
-
-// ============================================
-// HELPERS
-// ============================================
-
-func (m *model) updateViewport() {
-	var content strings.Builder
-
-	for _, msg := range m.messages {
-		switch msg.role {
-		case "user":
-			content.WriteString(userMsgStyle.Render("You: "))
-			content.WriteString(msg.content)
-			content.WriteString("\n\n")
-
-		case "assistant":
-			content.WriteString(assistantMsgStyle.Render("🤖 Agent: "))
-			content.WriteString(assistantContentStyle.Render(msg.content))
-			content.WriteString("\n\n")
-
-		case "log":
-			content.WriteString(logStyle.Render(msg.content))
-			content.WriteString("\n")
-
-		case "error":
-			content.WriteString(errorStyle.Render("❌ Error: "))
-			content.WriteString(msg.content)
-			content.WriteString("\n\n")
-
-		case "system":
-			content.WriteString(processingStyle.Render(msg.content))
-			content.WriteString("\n\n")
+		return tea.View{
+			Content: "\n  ❌ Failed to initialize",
 		}
 	}
 
-	m.viewport.SetContent(content.String())
-	m.viewport.GotoBottom()
+	// Return the UI's view directly
+	return m.ui.View()
 }
 
 // ============================================
@@ -448,13 +280,12 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 }
 
 // ============================================
-// MAIN
+// MAIN ENTRY POINT
 // ============================================
 
 func main() {
 	p := tea.NewProgram(
 		initialModel(),
-		tea.WithAltScreen(),
 	)
 
 	if _, err := p.Run(); err != nil {
