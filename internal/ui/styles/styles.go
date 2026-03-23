@@ -603,7 +603,7 @@ func DefaultStyles() Styles {
 
 	s.TextArea = textarea.Styles{
 		Focused: textarea.StyleState{
-			Base:             base.Background(charmtone.Pepper),
+			Base:             base.Background(lipgloss.Black),
 			Text:             base,
 			LineNumber:       base.Foreground(fgSubtle),
 			CursorLine:       base,
@@ -612,7 +612,7 @@ func DefaultStyles() Styles {
 			Prompt:           base.Foreground(tertiary),
 		},
 		Blurred: textarea.StyleState{
-			Base:             base.Background(charmtone.Pepper),
+			Base:             base.Background(lipgloss.Black),
 			Text:             base.Foreground(fgMuted),
 			LineNumber:       base.Foreground(fgMuted),
 			CursorLine:       base,

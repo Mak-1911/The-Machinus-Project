@@ -37,18 +37,18 @@ type Opts struct {
 func Render(s *styles.Styles, version string, compact bool, o Opts) string {
 	const charm = " OxaLabs™"
 
-	fg := func(c color.Color, s string) string {
-		return lipgloss.NewStyle().Foreground(c).Render(s)
+	fg := func(c color.Color, text string) string {
+		return lipgloss.NewStyle().Foreground(c).Render(text)
 	}
 
 	// Title.
 	const spacing = 1
 	letterforms := []letterform{
-		letterC,
 		letterR,
-		letterU,
+		letterE,
+		letterL,
 		letterSStylized,
-		letterH,
+		letterY,
 	}
 	stretchIndex := -1 // -1 means no stretching.
 	if !compact {
@@ -154,30 +154,37 @@ func renderWord(spacing int, stretchIndex int, letterforms ...letterform) string
 // letterC renders the letter C in a stylized way. It takes an integer that
 // determines how many cells to stretch the letter. If the stretch is less than
 // 1, it defaults to no stretching.
-func letterC(stretch bool) string {
+func letterE(stretch bool) string {
 	// Here's what we're making:
-	//
-	// ▄▀▀▄▀▀▄
-	// █     █
-	// ▀     ▀
+	//  
+	// ▄▀▀▀
+	// █▀▀▀
+	//  ▀▀▀
 
 	left := heredoc.Doc(`
 		▄
 		█
+		▀
+	`)
+	center := heredoc.Doc(`
+		▀
+		▀
+		▀
 	`)
 	right := heredoc.Doc(`
 		▀
-
+		▀
 		▀
 	`)
 	return joinLetterform(
 		left,
-		stretchLetterformPart(right, letterformProps{
+		stretchLetterformPart(center, letterformProps{
 			stretch:    stretch,
-			width:      4,
+			width:      3,
 			minStretch: 7,
 			maxStretch: 12,
 		}),
+		right,
 	)
 }
 
@@ -210,6 +217,33 @@ func letterH(stretch bool) string {
 		side,
 	)
 }
+
+func letterL(stretch bool) string {
+	// Here's what we're making:
+	//
+	// █
+	// █
+	// ▀▄▄▄
+
+	side := heredoc.Doc(`
+		█
+		█`)
+	middle := heredoc.Doc(`
+
+
+		▀
+	`)
+	return joinLetterform(
+		side,
+		stretchLetterformPart(middle, letterformProps{
+			stretch:    stretch,
+			width:      3,
+			minStretch: 6,
+			maxStretch: 12,
+		}),
+	)
+}
+
 
 // letterR renders the letter R in a stylized way. It takes an integer that
 // determines how many cells to stretch the letter. If the stretch is less than
@@ -255,21 +289,21 @@ func letterSStylized(stretch bool) string {
 	//
 	// ▄▀▀▀▀▀
 	// ▀▀▀▀▀█
-	// ▀▀▀▀▀
+	// ▀▀▀▀
 
 	left := heredoc.Doc(`
 		▄
-		▀
+		█
 		▀
 	`)
 	center := heredoc.Doc(`
 		▀
 		▀
-		▀
 	`)
 	right := heredoc.Doc(`
-		▀
+		▄
 		█
+		▀
 	`)
 	return joinLetterform(
 		left,
@@ -286,31 +320,29 @@ func letterSStylized(stretch bool) string {
 // letterU renders the letter U in a stylized way. It takes an integer that
 // determines how many cells to stretch the letter. If the stretch is less than
 // 1, it defaults to no stretching.
-func letterU(stretch bool) string {
+func letterY(stretch bool) string {
 	// Here's what we're making:
 	//
 	// █   █
-	// █   █
-	//	▀▀▀
+	//  ▀█▀ 
+	//   █
 
-	side := heredoc.Doc(`
-		█
-		█
-	`)
+	left := heredoc.Doc(`
+█
+ ▀
+  `)
 	middle := heredoc.Doc(`
 
-
-		▀
-	`)
+█
+▀`)
+	right := heredoc.Doc(`
+ █
+▀
+ `)
 	return joinLetterform(
-		side,
-		stretchLetterformPart(middle, letterformProps{
-			stretch:    stretch,
-			width:      3,
-			minStretch: 7,
-			maxStretch: 12,
-		}),
-		side,
+		left,
+		middle,
+		right,
 	)
 }
 

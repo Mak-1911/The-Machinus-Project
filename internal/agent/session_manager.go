@@ -19,14 +19,21 @@ type SessionStore interface {
 
 //SessionManager manages session lifecycles
 type SessionManager struct {
-	store SessionStore
+	store   SessionStore
+	workDir string
 }
 
 //NewSessionManager creates a new session manager
-func NewSessionManager(store SessionStore) *SessionManager {
+func NewSessionManager(store SessionStore, workDir string) *SessionManager {
 	return &SessionManager{
-		store: store,
+		store:   store,
+		workDir: workDir,
 	}
+}
+
+// SetWorkingDir sets the working directory for new sessions.
+func (sm *SessionManager) SetWorkingDir(dir string) {
+	sm.workDir = dir
 }
 
 //CreateSession creates a new session
@@ -37,7 +44,10 @@ func (sm *SessionManager) CreateSession(ctx context.Context) (*Session, error){
 		LastActive: time.Now(),
 		Messages:	[]ConversationMessage{},
 		Status: 	"active",
-		Metadata:	make(map[string]string),
+		Metadata:	map[string]string{
+			"work_dir": sm.workDir,
+			"title":    "New Session",
+		},
 	}
 
 	if err := sm.store.SaveSession(ctx, session); err != nil {

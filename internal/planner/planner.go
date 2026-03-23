@@ -3,7 +3,6 @@ package planner
 import (
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"github.com/machinus/cloud-agent/internal/memory"
 	"github.com/machinus/cloud-agent/internal/skills"
 	"github.com/machinus/cloud-agent/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 // LLMClient represents the API client for GLM
@@ -28,14 +28,15 @@ type LLMClient struct {
 type Planner struct {
 	client           *LLMClient
 	tools            map[string]types.Tool
-	cachedXMLPrompt  *SystemPromptXML  // Cached to avoid repeated file reads
+	cachedPrompt     *SystemPromptYAML  // Cached to avoid repeated file reads
 	skillsLoader     *skills.Loader    // Skills system
+	customPrompt	 string
 }
 
 // NewPlanner creates a new planner
 func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool, skillsLoader *skills.Loader) *Planner {
-	// Pre-load and cache the XML prompt at initialization
-	xmlPrompt := loadSystemPromptXMLStatic()
+	// Pre-load and cache the YAML prompt at initialization
+	yamlPrompt := loadSystemPromptYAMLStatic()
 
 	return &Planner{
 		client: &LLMClient{
@@ -43,12 +44,12 @@ func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool, skil
 			APIKey:  apiKey,
 			Model:   model,
 			HTTPClient: &http.Client{
-				Timeout: 120 * time.Second, // Increased to 2 minutes for complex queries
+				Timeout: 300 * time.Second, // 5 minutes for complex queries with large context
 			},
 		},
-		tools:           tools,
-		cachedXMLPrompt: xmlPrompt, // Cache at startup
-		skillsLoader:    skillsLoader,
+		tools:        tools,
+		cachedPrompt: yamlPrompt, // Cache at startup
+		skillsLoader: skillsLoader,
 	}
 }
 
@@ -111,116 +112,59 @@ type ConversationMessage struct {
 	ToolID    string     `json:"tool_id,omitempty"` // For tool responses
 }
 
-// SystemPromptXML represents the XML structure for system prompts
-type SystemPromptXML struct {
-	XMLName          xml.Name           `xml:"system_prompt"`
-	Role             string             `xml:"role"`
-	ExecutionStrategy ExecutionStrategy  `xml:"execution_strategy"`
-	ToolCallFormat   ToolCallFormat     `xml:"tool_call_format"`
-	ImportantGuidelines ImportantGuidelines `xml:"important_guidelines"`
-	ErrorRecovery    ErrorRecovery      `xml:"error_recovery"`
-	Examples         Examples           `xml:"examples"`
+// SystemPromptYAML represents the YAML structure for system prompts
+type SystemPromptYAML struct {
+	Role               string                 `yaml:"role"`
+	ExecutionStrategy  []string               `yaml:"execution_strategy"`
+	ToolSelection      map[string]ToolPattern `yaml:"tool_selection"`
+	ToolChains         map[string][]string    `yaml:"tool_chains"`
+	CriticalRules      []CriticalRule         `yaml:"critical_rules"`
+	ToolCallFormat     string                 `yaml:"tool_call_format"`
+	Guidelines         []string               `yaml:"guidelines"`
+	ErrorRecovery      ErrorRecoveryYAML      `yaml:"error_recovery"`
+	Examples           []ExampleYAML          `yaml:"examples"`
 }
 
-type ExecutionStrategy struct {
-	Steps []Step `xml:"step"`
+type ToolPattern struct {
+	Triggers   []string `yaml:"triggers"`
+	Tool       string   `yaml:"tool"`
+	Chain      string   `yaml:"chain"`
+	Alt        string   `yaml:"alt"`
+	Examples   []string `yaml:"examples"`
 }
 
-type Step struct {
-	Order int    `xml:"order,attr"`
-	Text  string `xml:",chardata"`
+type CriticalRule struct {
+	Priority int    `yaml:"priority"`
+	Rule     string `yaml:"rule"`
 }
 
-type ToolCallFormat struct {
-	Description string   `xml:"description"`
-	Example     string   `xml:"example"`
+type ErrorRecoveryYAML struct {
+	Title               string              `yaml:"title"`
+	Description         string              `yaml:"description"`
+	FailureTypes        map[string]FailureTypeYAML `yaml:"failure_types"`
+	RetryStrategies     map[string][]string  `yaml:"retry_strategies"`
+	AlternativeTools    map[string]AltTool   `yaml:"alternative_tools"`
+	WhenToStop          []string            `yaml:"when_to_stop"`
+	TransparentComm     []string            `yaml:"transparent_communication"`
+	ExecutionContext    []string            `yaml:"execution_context"`
 }
 
-type ImportantGuidelines struct {
-	Guidelines []Guideline `xml:"guideline"`
+type FailureTypeYAML struct {
+	Description string   `yaml:"description"`
+	Indicators   []string `yaml:"indicators"`
+	Action       string   `yaml:"action"`
 }
 
-type Guideline struct {
-	Text string `xml:",chardata"`
+type AltTool struct {
+	Alternatives []string `yaml:"alternatives"`
+	UseWhen      string   `yaml:"use_when"`
 }
 
-type ErrorRecovery struct {
-	Title             string            `xml:"title"`
-	Description       string            `xml:"description"`
-	FailureTypes      FailureTypes      `xml:"failure_types"`
-	RetryStrategies   RetryStrategies   `xml:"retry_strategies"`
-	SuggestedAlternatives SuggestedAlternatives `xml:"suggested_alternatives"`
-	WhenToStop        WhenToStop        `xml:"when_to_stop"`
-	TransparentCommunication TransparentCommunication `xml:"transparent_communication"`
-	ExecutionHistory  ExecutionHistory  `xml:"execution_history"`
-}
-
-type FailureTypes struct {
-	Types []FailureType `xml:"type"`
-}
-
-type FailureType struct {
-	Name     string   `xml:"name,attr"`
-	Description string `xml:"description"`
-	Examples string   `xml:"examples"`
-}
-
-type RetryStrategies struct {
-	Strategies []RetryStrategy `xml:"strategy"`
-}
-
-type RetryStrategy struct {
-	Name      string    `xml:"name,attr"`
-	Description string `xml:"description"`
-	Attempts  []Attempt `xml:"attempts>attempt"`
-	Fallback  string    `xml:"fallback"`
-	Message   string    `xml:"message"`
-}
-
-type Attempt struct {
-	Number string `xml:"number,attr"`
-	Text   string `xml:",chardata"`
-}
-
-type SuggestedAlternatives struct {
-	Alternatives []Alternative `xml:"alternative"`
-}
-
-type Alternative struct {
-	Text string `xml:",chardata"`
-}
-
-type WhenToStop struct {
-	Rules []Rule `xml:"rule"`
-}
-
-type Rule struct {
-	Text string `xml:",chardata"`
-}
-
-type TransparentCommunication struct {
-	Description string   `xml:"description"`
-	Examples    []Example `xml:"examples>example"`
-}
-
-type ExecutionHistory struct {
-	Description string `xml:"description"`
-	Items       []Item  `xml:"item"`
-}
-
-type Item struct {
-	Text string `xml:",chardata"`
-}
-
-type Examples struct {
-	Examples []Example `xml:"example"`
-}
-
-type Example struct {
-	User      string `xml:"user"`
-	Response  string `xml:"response"`
-	Attempt   string `xml:"attempt"`
-	Text      string `xml:",chardata"`
+type ExampleYAML struct {
+	User      string   `yaml:"user"`
+	Response  string   `yaml:"response"`
+	Attempt   string   `yaml:"attempt"`
+	Steps     []string `yaml:"steps,omitempty"`
 }
 
 // Plan generates a plan from the user's message
@@ -420,29 +364,29 @@ func (p *Planner) Continue(ctx context.Context, messages []ConversationMessage, 
 }
 
 func (p *Planner) buildSystemPrompt(tools []ToolDef) string {
-	// Use cached XML prompt if available, otherwise fallback
-	if p.cachedXMLPrompt != nil {
-		return p.buildPromptFromXML(p.cachedXMLPrompt, tools)
+	// Use cached YAML prompt if available, otherwise fallback
+	if p.cachedPrompt != nil {
+		return p.buildPromptFromYAML(p.cachedPrompt, tools)
 	}
 
-	// Fallback to hardcoded prompt if XML not cached
+	// Fallback to hardcoded prompt if YAML not cached
 	return p.buildFallbackSystemPrompt(tools)
 }
 
-// loadSystemPromptXMLStatic loads and parses the system prompt XML file (static version for initialization)
-func loadSystemPromptXMLStatic() *SystemPromptXML {
+// loadSystemPromptYAMLStatic loads and parses the system prompt YAML file
+func loadSystemPromptYAMLStatic() *SystemPromptYAML {
 	// Try multiple possible paths
 	paths := []string{
-		"prompts/agent_system.xml",
-		"./prompts/agent_system.xml",
-		"../prompts/agent_system.xml",
+		"prompts/agent_system.yaml",
+		"./prompts/agent_system.yaml",
+		"../prompts/agent_system.yaml",
 	}
 
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err == nil {
-			var prompt SystemPromptXML
-			if err := xml.Unmarshal(data, &prompt); err == nil {
+			var prompt SystemPromptYAML
+			if err := yaml.Unmarshal(data, &prompt); err == nil {
 				return &prompt
 			}
 		}
@@ -452,14 +396,14 @@ func loadSystemPromptXMLStatic() *SystemPromptXML {
 	return nil
 }
 
-// buildPromptFromXML builds the system prompt from cached XML
-func (p *Planner) buildPromptFromXML(xmlPrompt *SystemPromptXML, tools []ToolDef) string {
+// buildPromptFromYAML builds the system prompt from cached YAML
+func (p *Planner) buildPromptFromYAML(yamlPrompt *SystemPromptYAML, tools []ToolDef) string {
 	var prompt strings.Builder
 
 	// Role
-	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.Role))
+	prompt.WriteString(fmt.Sprintf("%s\n\n", yamlPrompt.Role))
 
-	// Tools section
+	// Available Tools section (rich descriptions for LLM context)
 	prompt.WriteString("# Available Tools\n")
 	for _, tool := range tools {
 		// Get the actual tool instance to access metadata
@@ -498,7 +442,7 @@ func (p *Planner) buildPromptFromXML(xmlPrompt *SystemPromptXML, tools []ToolDef
 		}
 	}
 
-	// Skills section (NEW)
+	// Skills section
 	if p.skillsLoader != nil {
 		prompt.WriteString("\n# Available Skills\n")
 		prompt.WriteString(p.skillsLoader.GetAvailableSkillsXML())
@@ -507,221 +451,156 @@ func (p *Planner) buildPromptFromXML(xmlPrompt *SystemPromptXML, tools []ToolDef
 
 	// Execution Strategy
 	prompt.WriteString("\n# Execution Strategy\n")
-	for _, step := range xmlPrompt.ExecutionStrategy.Steps {
-		prompt.WriteString(fmt.Sprintf("%d. %s\n", step.Order, step.Text))
+	for i, step := range yamlPrompt.ExecutionStrategy {
+		prompt.WriteString(fmt.Sprintf("%d. %s\n", i+1, step))
 	}
 	prompt.WriteString("\n")
+
+	// Tool Selection Guidance
+	if yamlPrompt.ToolSelection != nil {
+		prompt.WriteString("# Tool Selection Guidance\n")
+		for name, pattern := range yamlPrompt.ToolSelection {
+			prompt.WriteString(fmt.Sprintf("\n## %s\n", strings.ReplaceAll(name, "_", " ")))
+			if len(pattern.Triggers) > 0 {
+				prompt.WriteString(fmt.Sprintf("Triggers: %s\n", strings.Join(pattern.Triggers, ", ")))
+			}
+			prompt.WriteString(fmt.Sprintf("Tool: %s\n", pattern.Tool))
+			if pattern.Chain != "" {
+				prompt.WriteString(fmt.Sprintf("Chain with: %s\n", pattern.Chain))
+			}
+			if len(pattern.Examples) > 0 {
+				prompt.WriteString("Examples:\n")
+				for _, ex := range pattern.Examples {
+					prompt.WriteString(fmt.Sprintf("  - %s\n", ex))
+				}
+			}
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Tool Chain Templates
+	if yamlPrompt.ToolChains != nil {
+		prompt.WriteString("# Tool Chain Templates\n")
+		for name, steps := range yamlPrompt.ToolChains {
+			prompt.WriteString(fmt.Sprintf("\n## %s\n", strings.ReplaceAll(name, "_", " ")))
+			for _, step := range steps {
+				prompt.WriteString(fmt.Sprintf("- %s\n", step))
+			}
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Critical Rules
+	if len(yamlPrompt.CriticalRules) > 0 {
+		prompt.WriteString("# Critical Rules\n")
+		for _, rule := range yamlPrompt.CriticalRules {
+			prompt.WriteString(fmt.Sprintf("- %s\n", rule.Rule))
+		}
+		prompt.WriteString("\n")
+	}
 
 	// Tool Call Format
 	prompt.WriteString("# Tool Call Format\n")
-	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ToolCallFormat.Description))
-	prompt.WriteString(xmlPrompt.ToolCallFormat.Example)
-	prompt.WriteString("\n")
-
-	// Important Guidelines
-	prompt.WriteString("# Important\n")
-	for _, guideline := range xmlPrompt.ImportantGuidelines.Guidelines {
-		prompt.WriteString(fmt.Sprintf("- %s\n", guideline.Text))
+	if yamlPrompt.ToolCallFormat != "" {
+		prompt.WriteString(yamlPrompt.ToolCallFormat)
+		prompt.WriteString("\n")
 	}
-	prompt.WriteString("\n")
 
-	// Error Recovery Section
-	prompt.WriteString(fmt.Sprintf("## %s\n", xmlPrompt.ErrorRecovery.Title))
-	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.ErrorRecovery.Description))
+	// Guidelines
+	if len(yamlPrompt.Guidelines) > 0 {
+		prompt.WriteString("# Guidelines\n")
+		for _, guideline := range yamlPrompt.Guidelines {
+			prompt.WriteString(fmt.Sprintf("- %s\n", guideline))
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Error Recovery
+	prompt.WriteString(fmt.Sprintf("# %s\n", yamlPrompt.ErrorRecovery.Title))
+	prompt.WriteString(fmt.Sprintf("%s\n\n", yamlPrompt.ErrorRecovery.Description))
 
 	// Failure Types
-	prompt.WriteString("### 1. Identify Failure Type\n")
-	prompt.WriteString("Tool errors include metadata about the failure type:\n")
-	for _, ft := range xmlPrompt.ErrorRecovery.FailureTypes.Types {
-		prompt.WriteString(fmt.Sprintf("- %s: %s\n", ft.Name, ft.Description))
-		if ft.Examples != "" {
-			prompt.WriteString(fmt.Sprintf("  %s\n", ft.Examples))
+	if yamlPrompt.ErrorRecovery.FailureTypes != nil {
+		prompt.WriteString("## Failure Types\n")
+		for name, ft := range yamlPrompt.ErrorRecovery.FailureTypes {
+			prompt.WriteString(fmt.Sprintf("- %s: %s\n", name, ft.Description))
+			if len(ft.Indicators) > 0 {
+				prompt.WriteString(fmt.Sprintf("  Indicators: %s\n", strings.Join(ft.Indicators, ", ")))
+			}
+			prompt.WriteString(fmt.Sprintf("  Action: %s\n", ft.Action))
 		}
+		prompt.WriteString("\n")
 	}
-	prompt.WriteString("\n")
 
 	// Retry Strategies
-	prompt.WriteString("### 2. Adaptive Retry Strategies\n")
-	prompt.WriteString("Don't just repeat the same call - adapt:\n\n")
-	for _, strategy := range xmlPrompt.ErrorRecovery.RetryStrategies.Strategies {
-		prompt.WriteString(fmt.Sprintf("%s: %s\n", strings.Title(strategy.Name), strategy.Description))
-		for _, attempt := range strategy.Attempts {
-			prompt.WriteString(fmt.Sprintf("- %s\n", attempt.Text))
-		}
-		if strategy.Fallback != "" {
-			prompt.WriteString(fmt.Sprintf("Fallback: %s\n", strategy.Fallback))
-		}
-		if strategy.Message != "" {
-			prompt.WriteString(fmt.Sprintf("Message: \"%s\"\n", strategy.Message))
-		}
-		prompt.WriteString("\n")
-	}
-
-	// Suggested Alternatives
-	prompt.WriteString("### 3. Suggested Alternatives\n")
-	prompt.WriteString("When tools fail, they may suggest alternatives:\n")
-	for _, alt := range xmlPrompt.ErrorRecovery.SuggestedAlternatives.Alternatives {
-		prompt.WriteString(fmt.Sprintf("- %s\n", alt.Text))
-	}
-	prompt.WriteString("\n")
-
-	// When to Stop
-	prompt.WriteString("### 4. Know When to Stop\n")
-	for _, rule := range xmlPrompt.ErrorRecovery.WhenToStop.Rules {
-		prompt.WriteString(fmt.Sprintf("- %s\n", rule.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Transparent Communication
-	prompt.WriteString("### 5. Transparent Communication\n")
-	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.TransparentCommunication.Description))
-	prompt.WriteString("Examples:\n")
-	for _, ex := range xmlPrompt.ErrorRecovery.TransparentCommunication.Examples {
-		prompt.WriteString(fmt.Sprintf("- \"%s\"\n", ex.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Execution History
-	prompt.WriteString("### 6. Use Execution History\n")
-	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.ExecutionHistory.Description))
-	for _, item := range xmlPrompt.ErrorRecovery.ExecutionHistory.Items {
-		prompt.WriteString(fmt.Sprintf("- %s\n", item.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Examples
-	prompt.WriteString("# Examples\n")
-	for _, ex := range xmlPrompt.Examples.Examples {
-		if ex.User != "" {
-			prompt.WriteString(fmt.Sprintf("User: \"%s\"\n", ex.User))
-			if ex.Response != "" {
-				prompt.WriteString(fmt.Sprintf("You: %s\n", ex.Response))
+	if yamlPrompt.ErrorRecovery.RetryStrategies != nil {
+		prompt.WriteString("## Retry Strategies\n")
+		for name, steps := range yamlPrompt.ErrorRecovery.RetryStrategies {
+			prompt.WriteString(fmt.Sprintf("- %s:\n", strings.ReplaceAll(name, "_", " ")))
+			for _, step := range steps {
+				prompt.WriteString(fmt.Sprintf("  - %s\n", step))
 			}
 		}
-		if ex.Attempt != "" {
-			prompt.WriteString(fmt.Sprintf("%s\n", ex.Attempt))
-		}
-		if ex.Text != "" {
-			prompt.WriteString(fmt.Sprintf("%s\n", ex.Text))
-		}
 		prompt.WriteString("\n")
 	}
 
-	return prompt.String()
-}
-
-// formatXMLPrompt formats the loaded XML prompt with tool list
-func (p *Planner) formatXMLPrompt(xmlPrompt *SystemPromptXML, toolList string) string {
-	var prompt strings.Builder
-
-	// Role
-	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.Role))
-
-	// Tools section
-	prompt.WriteString("# Available Tools\n")
-	prompt.WriteString(toolList)
-	prompt.WriteString("\n")
-
-	// Execution Strategy
-	prompt.WriteString("# Execution Strategy\n")
-	for _, step := range xmlPrompt.ExecutionStrategy.Steps {
-		prompt.WriteString(fmt.Sprintf("%d. %s\n", step.Order, step.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Tool Call Format
-	prompt.WriteString("# Tool Call Format\n")
-	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ToolCallFormat.Description))
-	prompt.WriteString(xmlPrompt.ToolCallFormat.Example)
-	prompt.WriteString("\n")
-
-	// Important Guidelines
-	prompt.WriteString("# Important\n")
-	for _, guideline := range xmlPrompt.ImportantGuidelines.Guidelines {
-		prompt.WriteString(fmt.Sprintf("- %s\n", guideline.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Error Recovery Section
-	prompt.WriteString(fmt.Sprintf("## %s\n", xmlPrompt.ErrorRecovery.Title))
-	prompt.WriteString(fmt.Sprintf("%s\n\n", xmlPrompt.ErrorRecovery.Description))
-
-	// Failure Types
-	prompt.WriteString("### 1. Identify Failure Type\n")
-	prompt.WriteString("Tool errors include metadata about the failure type:\n")
-	for _, ft := range xmlPrompt.ErrorRecovery.FailureTypes.Types {
-		prompt.WriteString(fmt.Sprintf("- %s: %s\n", ft.Name, ft.Description))
-		if ft.Examples != "" {
-			prompt.WriteString(fmt.Sprintf("  %s\n", ft.Examples))
-		}
-	}
-	prompt.WriteString("\n")
-
-	// Retry Strategies
-	prompt.WriteString("### 2. Adaptive Retry Strategies\n")
-	prompt.WriteString("Don't just repeat the same call - adapt:\n\n")
-	for _, strategy := range xmlPrompt.ErrorRecovery.RetryStrategies.Strategies {
-		prompt.WriteString(fmt.Sprintf("%s: %s\n", strings.Title(strategy.Name), strategy.Description))
-		for _, attempt := range strategy.Attempts {
-			prompt.WriteString(fmt.Sprintf("- %s\n", attempt.Text))
-		}
-		if strategy.Fallback != "" {
-			prompt.WriteString(fmt.Sprintf("Fallback: %s\n", strategy.Fallback))
-		}
-		if strategy.Message != "" {
-			prompt.WriteString(fmt.Sprintf("Message: \"%s\"\n", strategy.Message))
+	// Alternative Tools
+	if yamlPrompt.ErrorRecovery.AlternativeTools != nil {
+		prompt.WriteString("## Alternative Tools\n")
+		for tool, alt := range yamlPrompt.ErrorRecovery.AlternativeTools {
+			prompt.WriteString(fmt.Sprintf("- %s → %s (%s)\n", tool, strings.Join(alt.Alternatives, ", "), alt.UseWhen))
 		}
 		prompt.WriteString("\n")
 	}
-
-	// Suggested Alternatives
-	prompt.WriteString("### 3. Suggested Alternatives\n")
-	prompt.WriteString("When tools fail, they may suggest alternatives:\n")
-	for _, alt := range xmlPrompt.ErrorRecovery.SuggestedAlternatives.Alternatives {
-		prompt.WriteString(fmt.Sprintf("- %s\n", alt.Text))
-	}
-	prompt.WriteString("\n")
 
 	// When to Stop
-	prompt.WriteString("### 4. Know When to Stop\n")
-	for _, rule := range xmlPrompt.ErrorRecovery.WhenToStop.Rules {
-		prompt.WriteString(fmt.Sprintf("- %s\n", rule.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Transparent Communication
-	prompt.WriteString("### 5. Transparent Communication\n")
-	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.TransparentCommunication.Description))
-	prompt.WriteString("Examples:\n")
-	for _, ex := range xmlPrompt.ErrorRecovery.TransparentCommunication.Examples {
-		prompt.WriteString(fmt.Sprintf("- \"%s\"\n", ex.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Execution History
-	prompt.WriteString("### 6. Use Execution History\n")
-	prompt.WriteString(fmt.Sprintf("%s\n", xmlPrompt.ErrorRecovery.ExecutionHistory.Description))
-	for _, item := range xmlPrompt.ErrorRecovery.ExecutionHistory.Items {
-		prompt.WriteString(fmt.Sprintf("- %s\n", item.Text))
-	}
-	prompt.WriteString("\n")
-
-	// Examples
-	prompt.WriteString("# Examples\n")
-	for _, ex := range xmlPrompt.Examples.Examples {
-		if ex.User != "" {
-			prompt.WriteString(fmt.Sprintf("User: \"%s\"\n", ex.User))
-			if ex.Response != "" {
-				prompt.WriteString(fmt.Sprintf("You: %s\n", ex.Response))
-			}
-		}
-		if ex.Attempt != "" {
-			prompt.WriteString(fmt.Sprintf("%s\n", ex.Attempt))
-		}
-		if ex.Text != "" {
-			prompt.WriteString(fmt.Sprintf("%s\n", ex.Text))
+	if len(yamlPrompt.ErrorRecovery.WhenToStop) > 0 {
+		prompt.WriteString("## When to Stop\n")
+		for _, rule := range yamlPrompt.ErrorRecovery.WhenToStop {
+			prompt.WriteString(fmt.Sprintf("- %s\n", rule))
 		}
 		prompt.WriteString("\n")
+	}
+
+	// Transparent Communication
+	if len(yamlPrompt.ErrorRecovery.TransparentComm) > 0 {
+		prompt.WriteString("## Transparent Communication\n")
+		for _, ex := range yamlPrompt.ErrorRecovery.TransparentComm {
+			prompt.WriteString(fmt.Sprintf("- %s\n", ex))
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Execution Context
+	if len(yamlPrompt.ErrorRecovery.ExecutionContext) > 0 {
+		prompt.WriteString("## Execution Context\n")
+		for _, item := range yamlPrompt.ErrorRecovery.ExecutionContext {
+			prompt.WriteString(fmt.Sprintf("- %s\n", item))
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Examples
+	if len(yamlPrompt.Examples) > 0 {
+		prompt.WriteString("# Examples\n")
+		for _, ex := range yamlPrompt.Examples {
+			if ex.User != "" {
+				prompt.WriteString(fmt.Sprintf("User: \"%s\"\n", ex.User))
+				if ex.Response != "" {
+					prompt.WriteString(fmt.Sprintf("Response: %s\n", ex.Response))
+				}
+			}
+			if ex.Attempt != "" {
+				prompt.WriteString(fmt.Sprintf("Attempt: %s\n", ex.Attempt))
+			}
+			if len(ex.Steps) > 0 {
+				prompt.WriteString("Steps:\n")
+				for _, step := range ex.Steps {
+					prompt.WriteString(fmt.Sprintf("  - %s\n", step))
+				}
+			}
+			prompt.WriteString("\n")
+		}
 	}
 
 	return prompt.String()
@@ -1389,4 +1268,22 @@ func (c *LLMClient) CallWithMessages(ctx context.Context, messages []map[string]
 	}
 
 	return &planResp, nil
+}
+
+
+// NewPlannerWithPrompt: Creates a Planner with custom system prompt
+func NewPlannerWithPrompt(baseURL, apiKey, model string, tools map[string]types.Tool, customPrompt string, skillsLoader *skills.Loader) *Planner {
+	return &Planner{
+		client: &LLMClient{
+			BaseURL: baseURL,
+			APIKey: apiKey,
+			Model: model,
+			HTTPClient: &http.Client{
+				Timeout: 120 * time.Second,
+			},
+		},
+			tools: 		tools,
+			customPrompt: customPrompt,
+			skillsLoader: skillsLoader,
+	}
 }

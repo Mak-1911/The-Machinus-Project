@@ -23,6 +23,11 @@ type MessageHistoryProvider interface {
 	GetHistoryForSession(ctx context.Context, sessionID string) ([]*message.Message, error)
 }
 
+// SessionSaver saves messages to a session.
+type SessionSaver interface {
+	SaveMessage(ctx context.Context, sessionID, role, content string) error
+}
+
 // llmCoordinator manages LLM interactions.
 type llmCoordinator struct {
 	mu            sync.RWMutex
@@ -37,6 +42,7 @@ type llmCoordinator struct {
 	lastToolCalls []ExecutedToolCall
 	progressCB    ProgressCallback
 	historyProvider MessageHistoryProvider
+	sessionSaver  SessionSaver
 	debug         bool
 }
 
@@ -132,6 +138,13 @@ func (a *llmCoordinator) SetHistoryProvider(provider MessageHistoryProvider) {
 	a.historyProvider = provider
 }
 
+// SetSessionSaver sets the session saver for persisting messages.
+func (a *llmCoordinator) SetSessionSaver(saver SessionSaver) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sessionSaver = saver
+}
+
 // SetDebug sets debug mode for verbose logging.
 func (a *llmCoordinator) SetDebug(enabled bool) {
 	a.mu.Lock()
@@ -147,6 +160,23 @@ func (a *llmCoordinator) sendProgress(event ProgressEvent) {
 	if cb != nil {
 		cb(event)
 	}
+}
+
+// saveMessages saves the user message and assistant response to the session.
+func (a *llmCoordinator) saveMessages(ctx context.Context, sessionID, userContent, assistantResponse string) {
+	a.mu.RLock()
+	saver := a.sessionSaver
+	a.mu.RUnlock()
+
+	if saver == nil {
+		return
+	}
+
+	// Save user message
+	_ = saver.SaveMessage(ctx, sessionID, "user", userContent)
+
+	// Save assistant response
+	_ = saver.SaveMessage(ctx, sessionID, "assistant", assistantResponse)
 }
 
 // getModelConfig returns the current model config.
@@ -237,7 +267,8 @@ func (a *llmCoordinator) Run(ctx context.Context, sessionID, content string, att
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		toolCalls := a.parseToolCalls(response)
 		if len(toolCalls) == 0 {
-			// No more tool calls, return the final response
+			// No more tool calls, save messages and return the final response
+			a.saveMessages(ctx, sessionID, content, response)
 			return response, nil
 		}
 
@@ -266,7 +297,14 @@ func (a *llmCoordinator) Run(ctx context.Context, sessionID, content string, att
 				isError = true
 			}
 
-			// Store the tool call for later retrieval
+			// Truncate result for display/LLM to prevent token bloat
+			maxResultLen := 5000
+			displayResult := result
+			if len(result) > maxResultLen {
+				displayResult = result[:maxResultLen] + "\n... (truncated)"
+			}
+
+			// Store the tool call for later retrieval (keep full result)
 			argsJSON, _ := json.Marshal(tc.Args)
 			a.mu.Lock()
 			a.lastToolCalls = append(a.lastToolCalls, ExecutedToolCall{
@@ -276,17 +314,17 @@ func (a *llmCoordinator) Run(ctx context.Context, sessionID, content string, att
 			})
 			a.mu.Unlock()
 
-			// Send progress update for completed tool
+			// Send progress update for completed tool (with truncated result)
 			a.sendProgress(ProgressEvent{
 				Type:     "tool_complete",
 				ToolID:   tc.ID,
 				ToolName: tc.Name,
 				ToolArgs: string(argsJSON),
-				Result:   result,
+				Result:   displayResult,
 				IsError:  isError,
 			})
 
-			toolResults = append(toolResults, fmt.Sprintf("Tool: %s\nResult: %s", tc.Name, result))
+			toolResults = append(toolResults, fmt.Sprintf("Tool: %s\nResult: %s", tc.Name, displayResult))
 		}
 
 		// Add assistant message and tool results to conversation
@@ -526,15 +564,65 @@ func (a *llmCoordinator) buildMessages(ctx context.Context, sessionID, content s
 
 // getSystemPrompt returns the system prompt.
 func (a *llmCoordinator) getSystemPrompt() string {
-	basePrompt := `You are a helpful AI assistant. You can use tools to complete tasks, but you should also answer questions conversationally when appropriate.
+	// TUI uses "tool:" format parser, not function calling
+	// Use hardcoded prompt that matches the parser expectations
+	basePrompt := `You are an intelligent agent that executes user requests by calling tools. You are efficient, precise, and adapt your approach based on results.
 
-Tool Usage Guidelines:
-- ONLY use tools when the user explicitly asks for file operations, searching, or code execution
-- For conversational questions like "what did we do?", "explain this", etc., just answer directly without tools
-- When you DO use tools, call them with proper JSON arguments
-- After using tools, provide a clear response based on the results
+EXECUTION STRATEGY:
+1. Understand the user's goal - identify what they want to accomplish
+2. Select the appropriate tool(s) based on the task type
+3. Chain tools when needed - use output of one tool as input to the next
+4. Execute with purpose - each tool call should advance the goal
+5. Adapt to errors - analyze failures and try alternatives intelligently
+6. Summarize and stop - provide clear results when the goal is achieved
 
-Respond naturally and helpfully. Don't over-use tools for simple conversation.`
+CRITICAL FILE SELECTION RULES:
+ALWAYS use glob to find files FIRST - don't randomly search or read.
+
+SKIP these files/directories - NEVER read them:
+- Databases: *.db, *.sqlite, *.sqlite3
+- Binaries: *.exe, *.dll, *.so, *.dylib, *.bin
+- Archives: *.zip, *.tar, *.gz, *.rar, *.7z
+- Build artifacts: node_modules/, vendor/, .git/, dist/, build/
+- Lock files: package-lock.json, yarn.lock, Cargo.lock, go.sum
+- Cache: .cache/, __pycache__/, *.pyc
+
+FOCUS on these file types:
+- Source code: *.go, *.ts, *.tsx, *.js, *.jsx, *.py, *.rs, *.java, *.c, *.cpp, *.h
+- Configs: *.json, *.yaml, *.yml, *.toml, *.ini, *.env
+- Docs: *.md, *.txt, *.rst
+- Web: *.html, *.css, *.scss
+
+TOOL CALL FORMAT:
+CRITICAL: For ALL tasks requiring tools, respond with:
+tool:tool_name {"param":"value", "param2":"value2"}
+
+For example:
+- tool:glob {"pattern":"*.go"} - FIRST: find relevant files
+- tool:read_file {"file_path":"main.go"} - THEN: read specific source files
+- tool:grep {"pattern":"TODO", "glob":"*.go"} - search in source files only
+
+ONLY respond with plain text for greetings, general questions, or when no tools are needed.
+
+CRITICAL RULES:
+1. ALWAYS use glob BEFORE reading files - find what exists first
+2. NEVER read database, binary, or archive files
+3. One tool call at a time - wait for results before deciding next step
+4. STOP when goal achieved - don't make unnecessary tool calls
+5. If tool fails, ANALYZE error before retrying
+6. For greetings (hello, hi), respond with text - no tool calls
+
+ERROR RECOVERY:
+- timeout/503/rate limit: Retry with longer timeout
+- 404/file not found: Try glob to find correct path
+- permission denied: Try alternative approach or ask user
+- too many results: Narrow search with specific pattern, add glob filter
+- STOP after 3 failed attempts with same error
+- STOP immediately for hard failures (404, auth, permission)
+
+When you use tools, call them with the "tool:" prefix and JSON arguments. After getting results, provide a clear, helpful response.
+
+Keep responses concise and focused. Don't over-explain or over-use tools.`
 
 	// Add tool instructions if tools are available
 	if a.toolExecutor != nil && len(a.toolExecutor.GetTools()) > 0 {
@@ -567,7 +655,7 @@ func (a *llmCoordinator) callLLM(ctx context.Context, baseURL, apiKey, model str
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)

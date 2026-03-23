@@ -114,6 +114,11 @@ func main() {
 	toolMap[httpTool.Name()] = httpTool
 	log.Println("  - HTTP tool enabled")
 
+	// Web Search Tool
+	webSearchTool := tools.NewWebSearchTool(30, 10)
+	toolMap[webSearchTool.Name()] = webSearchTool
+	log.Println("  - Web search tool enabled")
+
 	// Browser Tool (PinchTab)
 	pinchtabURL := os.Getenv("PINCHTAB_URL")
 	if pinchtabURL == "" {
@@ -153,7 +158,7 @@ func main() {
 
 	// Initialize session manager
 	log.Println("Initializing session manager...")
-	sessionMgr := agent.NewSessionManager(store)
+	sessionMgr := agent.NewSessionManager(store, ".")
 
 	// Initialize orchestrator
 	log.Println("Initializing orchestrator...")

@@ -1,15 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/chzyer/readline"
 	"github.com/machinus/cloud-agent/internal/agent"
+	cliclient "github.com/machinus/cloud-agent/internal/cli"
 	"github.com/machinus/cloud-agent/internal/config"
 	"github.com/machinus/cloud-agent/internal/memory"
 	"github.com/machinus/cloud-agent/internal/planner"
@@ -42,6 +44,8 @@ type InteractiveCLI struct {
 	sessionID      string
 	userID         string
 	history        []string // Conversation history for context
+	output         *cliclient.StreamingOutput
+	completer      *readline.PrefixCompleter
 }
 
 func main() {
@@ -117,53 +121,54 @@ func runSingleShot(cfg *config.Config, message string) {
 
 	// Create session manager
 	stepStart = time.Now()
-	sessionMgr := agent.NewSessionManager(store)
+	sessionMgr := agent.NewSessionManager(store, ".")
 	session, err := sessionMgr.GetOrCreateDefaultSession(ctx, "")
 	if err != nil {
 		log.Printf("Warning: failed to create session: %v", err)
 	}
 	fmt.Printf("  ✓ Session ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
-	// Create streaming log writer for real-time output
-	logWriter := agent.NewStreamingLogWriter(store, true, false)
+	// No logWriter needed - using progress callback for streaming
 	var sessionID string
 	if session != nil {
 		sessionID = session.ID
 	}
 
 	stepStart = time.Now()
-	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, sessionID)
+	orch := agent.NewOrchestrator(p, toolMap, memManager, store, nil, sessionMgr, sessionID) // No logWriter, use progress callback instead
 	fmt.Printf("  ✓ Orchestrator ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Show total boot time
 	bootTime := time.Since(bootStart).Round(time.Millisecond)
-	fmt.Printf("\n%s▶%s Booted in %v\n\n", ColorBold, ColorReset, bootTime)
+	fmt.Printf("\n%s>%s Booted in %v\n\n", ColorBold, ColorReset, bootTime)
+
+	// Set up streaming output
+	output := cliclient.NewStreamingOutput(false)
+	orch.SetProgressCallback(output.ProgressCallback())
 
 	// Execute
-	fmt.Printf("%s▶%s Executing: %s\n\n", ColorBold, ColorReset, message)
-	fmt.Println(strings.Repeat("─", 70))
+	fmt.Printf("%s•%s Executing: %s\n\n", ColorBold, ColorReset, message)
 
 	task, err := orch.Execute(ctx, cliUserID, message)
 
-	fmt.Println(strings.Repeat("─", 70))
-	fmt.Println()
-
 	if err != nil {
-		fmt.Printf("%s❌ Error:%s %v\n", ColorRed, ColorReset, err)
+		output.Error(fmt.Sprintf("Execution failed: %v", err))
 		os.Exit(1)
 	}
 
-	// Show response
+	// Show final response
 	if task.Response != "" {
-		fmt.Printf("%s🤖 Response:%s\n%s\n\n", ColorPurple, ColorReset, task.Response)
+		output.Response(task.Response)
 	}
 
 	// Show summary
-	fmt.Printf("%s✅%s Task %s\n", ColorGreen, ColorReset, task.Status)
-	fmt.Printf("   Duration: %v\n", task.CompletedAt.Sub(task.CreatedAt).Round(time.Millisecond))
+	fmt.Printf("\n%s✅%s Task %s\n", ColorGreen, ColorReset, task.Status)
+	duration := task.CompletedAt.Sub(task.CreatedAt).Round(time.Millisecond)
+	fmt.Printf("   Duration: %v\n", duration)
 	if task.Error != "" {
 		fmt.Printf("%s⚠️  Error:%s %s\n", ColorYellow, ColorReset, task.Error)
 	}
+	fmt.Println()
 }
 
 func runInteractive(cfg *config.Config) {
@@ -224,7 +229,7 @@ func runInteractive(cfg *config.Config) {
 
 	// Create session manager
 	stepStart = time.Now()
-	sessionMgr := agent.NewSessionManager(store)
+	sessionMgr := agent.NewSessionManager(store, ".")
 	session, err := sessionMgr.GetOrCreateDefaultSession(ctx, "")
 	if err != nil {
 		log.Printf("Warning: failed to create session: %v", err)
@@ -232,14 +237,14 @@ func runInteractive(cfg *config.Config) {
 	fmt.Printf("  ✓ Session ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Create streaming log writer for real-time output
-	logWriter := agent.NewStreamingLogWriter(store, true, false)
+	// No logWriter needed - using progress callback for streaming
 	var sessionID string
 	if session != nil {
 		sessionID = session.ID
 	}
 
 	stepStart = time.Now()
-	orch := agent.NewOrchestrator(p, toolMap, memManager, store, logWriter, sessionMgr, sessionID)
+	orch := agent.NewOrchestrator(p, toolMap, memManager, store, nil, sessionMgr, sessionID)
 	fmt.Printf("  ✓ Orchestrator ready %s[%v]%s\n", ColorGray, time.Since(stepStart).Round(time.Millisecond), ColorReset)
 
 	// Show total boot time
@@ -247,6 +252,17 @@ func runInteractive(cfg *config.Config) {
 	fmt.Printf("\n%s▶%s Booted in %v\n\n", ColorBold, ColorReset, bootTime)
 
 	// Create CLI instance
+	output := cliclient.NewStreamingOutput(false) // Don't show timestamps by default
+
+	// Create tab completer for commands and files
+	completer := readline.NewPrefixCompleter(
+		readline.PcItem("/exit"),
+		readline.PcItem("/clear"),
+		readline.PcItem("/new"),
+		readline.PcItem("/sessions"),
+		readline.PcItem("/help"),
+	)
+
 	cli := &InteractiveCLI{
 		ctx:            ctx,
 		cfg:            cfg,
@@ -256,7 +272,12 @@ func runInteractive(cfg *config.Config) {
 		sessionID:      sessionID,
 		userID:         cliUserID,
 		history:        []string{},
+		output:         output,
+		completer:      completer,
 	}
+
+	// Set up progress callback for real-time streaming
+	orch.SetProgressCallback(output.ProgressCallback())
 
 	// Start interactive loop
 	cli.run()
@@ -291,6 +312,9 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 	// HTTP tool
 	toolMap["http"] = tools.NewHTTPTool(30, 10)
 
+	// Web search tool
+	toolMap["websearch"] = tools.NewWebSearchTool(30, 10)
+
 	// Browser tool (PinchTab)
 	pinchtabURL := os.Getenv("PINCHTAB_URL")
 	if pinchtabURL == "" {
@@ -307,16 +331,34 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 func (cli *InteractiveCLI) run() {
 	printWelcome()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	// Get history file path
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = "."
+	}
+	historyPath := filepath.Join(homeDir, ".machinus-history")
+
+	// Create readline instance with history
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "> ",
+		HistoryFile:     historyPath,
+		HistoryLimit:    1000,
+		AutoComplete:    cli.completer,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize readline: %v", err)
+	}
+	defer rl.Close()
 
 	for {
-		fmt.Printf("\n%sYou:%s ", ColorCyan, ColorReset)
-
-		if !scanner.Scan() {
+		line, err := rl.Readline()
+		if err != nil {
 			break
 		}
 
-		input := strings.TrimSpace(scanner.Text())
+		input := strings.TrimSpace(line)
 
 		// Handle empty input
 		if input == "" {
@@ -329,15 +371,11 @@ func (cli *InteractiveCLI) run() {
 			continue
 		}
 
-		// Add to history
-		cli.history = append(cli.history, input)
+		// Add to readline's history (it also saves to file)
+		rl.SaveHistory(input)
 
 		// Execute request
 		cli.executeRequest(input)
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Printf("Error reading input: %v", err)
 	}
 
 	fmt.Printf("\n%sGoodbye! 👋%s\n", ColorGreen, ColorReset)
@@ -345,7 +383,7 @@ func (cli *InteractiveCLI) run() {
 
 func printWelcome() {
 	fmt.Printf("\n%s╔════════════════════════════════════════════════════════════╗%s\n", ColorBold, ColorReset)
-	fmt.Printf("%s║%s            %s🤖 Machinus Cloud Agent %s                     %s║%s\n", ColorBold, ColorReset, ColorPurple, ColorReset, ColorBold, ColorReset)
+	fmt.Printf("%s║%s            %s🤖 Machinus Cloud Agent %s                        %s║%s\n", ColorBold, ColorReset, ColorPurple, ColorReset, ColorBold, ColorReset)
 	fmt.Printf("%s╚════════════════════════════════════════════════════════════╝%s\n\n", ColorBold, ColorReset)
 	fmt.Printf("%sCommands:%s\n", ColorGray, ColorReset)
 	fmt.Printf("  /exit      - Exit the agent\n")
@@ -375,12 +413,14 @@ func (cli *InteractiveCLI) handleCommand(input string) {
 			cli.history = []string{}
 			fmt.Printf("%s✓ Conversation history cleared%s\n", ColorGreen, ColorReset)
 		}
+		fmt.Println() // Empty line before next prompt
 
 	case "/new":
 		if cli.sessionManager != nil {
 			newSession, err := cli.sessionManager.CreateSession(cli.ctx)
 			if err != nil {
 				fmt.Printf("%s✗ Failed to create session: %v%s\n", ColorRed, err, ColorReset)
+				fmt.Println() // Empty line before next prompt
 				return
 			}
 			cli.sessionID = newSession.ID
@@ -388,9 +428,11 @@ func (cli *InteractiveCLI) handleCommand(input string) {
 		} else {
 			fmt.Printf("%s✗ Session manager not available%s\n", ColorRed, ColorReset)
 		}
+		fmt.Println() // Empty line before next prompt
 
 	case "/sessions":
 		cli.listSessions()
+		fmt.Println() // Empty line before next prompt
 
 	case "/help":
 		printWelcome()
@@ -398,37 +440,33 @@ func (cli *InteractiveCLI) handleCommand(input string) {
 	default:
 		fmt.Printf("%sUnknown command: %s%s\n", ColorRed, input, ColorReset)
 		fmt.Printf("Type /help for available commands\n")
+		fmt.Println() // Empty line before next prompt
 	}
 }
 
 func (cli *InteractiveCLI) executeRequest(message string) {
-	// Execute with streaming logs
-	fmt.Printf("\n%sProcessing...%s\n\n", ColorGray, ColorReset)
+	fmt.Println() // Empty line before execution
 
+	// Execute with real-time streaming via progress callback
 	task, err := cli.orch.Execute(cli.ctx, cli.userID, message)
 
 	if err != nil {
-		fmt.Printf("%s❌ Error:%s %v\n\n", ColorRed, ColorReset, err)
+		cli.output.Error(fmt.Sprintf("Execution failed: %v", err))
+		fmt.Println() // Empty line after error
 		return
 	}
 
-	// Show tool execution if any
-	if task.Plan != nil && len(task.Plan.Steps) > 0 {
-		fmt.Printf("\n%s🔧 Tool Execution:%s\n", ColorBlue, ColorReset)
-		for _, step := range task.Plan.Steps {
-			fmt.Printf("  → %s%s%s\n", ColorYellow, step.Tool, ColorReset)
-		}
-	}
-
-	// Show response
+	// Show final response if any
 	if task.Response != "" {
-		fmt.Printf("\n%s🤖 Agent:%s\n", ColorPurple, ColorReset)
-		// Word-wrap the response
-		fmt.Printf("%s\n", formatResponse(task.Response))
+		cli.output.Response(task.Response)
 	}
 
 	// Show duration
-	duration := task.CompletedAt.Sub(task.CreatedAt).Round(time.Millisecond)
+	completedAt := time.Now()
+	if task.CompletedAt != nil {
+		completedAt = *task.CompletedAt
+	}
+	duration := completedAt.Sub(task.CreatedAt).Round(time.Millisecond)
 	fmt.Printf("\n%s└─ Completed in %v%s\n", ColorGray, duration, ColorReset)
 }
 

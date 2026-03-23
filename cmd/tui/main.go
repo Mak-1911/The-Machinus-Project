@@ -116,7 +116,7 @@ func initializeAgentCmd() tea.Cmd {
 			memManager = memory.NewManager(store, true, cfg.MaxMemories)
 		}
 
-		sessionMgr := agent.NewSessionManager(store)
+		sessionMgr := agent.NewSessionManager(store, ".")
 		session, _ := sessionMgr.GetOrCreateDefaultSession(ctx, "")
 		var sessionID string
 		if session != nil {
@@ -269,6 +269,7 @@ func initializeTools(cfg *config.Config) map[string]types.Tool {
 	toolMap["mkdir"] = tools.NewMakeDirectoryTool()
 	toolMap["fileinfo"] = tools.NewFileInfoTool()
 	toolMap["http"] = tools.NewHTTPTool(30, 10)
+	toolMap["websearch"] = tools.NewWebSearchTool(30, 10)
 
 	pinchtabURL := os.Getenv("PINCHTAB_URL")
 	if pinchtabURL == "" {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/machinus/cloud-agent/internal/config"
+	storepkg "github.com/machinus/cloud-agent/internal/agent/store"
 	uiconfig "github.com/machinus/cloud-agent/internal/ui/config"
 	"github.com/machinus/cloud-agent/internal/ui/message"
 	"github.com/machinus/cloud-agent/internal/ui/session"
@@ -15,12 +16,23 @@ import (
 
 // ProgressEvent represents a progress update during agent execution.
 type ProgressEvent struct {
-	Type      string // "tool_start", "tool_complete", "thinking", "error"
+	Type      string // "tool_start", "tool_complete", "thinking", "error", "ask_user_input"
 	ToolID    string
 	ToolName  string
 	ToolArgs  string
 	Result    string
 	IsError   bool
+	// UserInputRequest contains data for user input dialogs (when Type is "ask_user_input")
+	UserInputRequest *UserInputDialogRequest
+}
+
+// UserInputDialogRequest represents a request to show a user input dialog.
+type UserInputDialogRequest struct {
+	RequestID   string
+	Message     string
+	Placeholder string
+	Default     string
+	Options     []string
 }
 
 // ProgressCallback is called when there's a progress update.
@@ -39,6 +51,8 @@ type AgentCoordinator interface {
 	ClearQueue(sessionID string) error
 	GetLastToolCalls() []ExecutedToolCall
 	SetProgressCallback(cb ProgressCallback)
+	SetHistoryProvider(provider MessageHistoryProvider)
+	SetSessionSaver(saver SessionSaver)
 }
 
 // ExecutedToolCall represents a tool that was executed.
@@ -63,25 +77,42 @@ type App struct {
 	FileTracker     *FileTracker
 	History         *History
 	Permissions     *permissionMgr
+	sessionStore    *storepkg.FilesystemStore
+	sessionSaver    *storepkg.SessionSaver
 }
 
 // New creates a new app context.
 func New(cfg *config.Config) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	uiCfg := uiconfig.NewUIConfig(cfg)
+
+	// Create the coordinator
+	coordinator := NewAgentCoordinator(cfg, uiCfg)
+
+	// Set up session persistence
+	workDir, _ := GetWorkingDir()
+	fsStore, historyProvider, _ := SetupSessionPersistence(ctx, workDir)
+	sessionSaver := storepkg.NewSessionSaver(fsStore, workDir)
+
+	// Wire up persistence to the coordinator
+	coordinator.SetHistoryProvider(historyProvider)
+	coordinator.SetSessionSaver(sessionSaver)
+
 	return &App{
 		ctx:         ctx,
 		cancel:      cancel,
 		config:      cfg,
 		uiConfig:    uiCfg,
 		quitCh:      make(chan struct{}),
-		Sessions:    &sessionMgr{},
-		AgentCoordinator: NewAgentCoordinator(cfg, uiCfg),
+		Sessions:    &sessionMgr{store: fsStore},
+		AgentCoordinator: coordinator,
 		LSPManager:  &LSPManager{},
 		Messages:    &Messages{},
 		FileTracker: &FileTracker{},
 		History:     &History{},
 		Permissions: &permissionMgr{},
+		sessionStore: fsStore,
+		sessionSaver: sessionSaver,
 	}
 }
 
@@ -138,10 +169,55 @@ func (a *App) Done() <-chan struct{} {
 type sessionMgr struct {
 	mu        sync.RWMutex
 	sessions  map[string]*session.Session
+	store     *storepkg.FilesystemStore // For loading persisted sessions
+}
+
+// loadPersistedSessions loads sessions from the filesystem store.
+func (s *sessionMgr) loadPersistedSessions(ctx context.Context) error {
+	if s.store == nil {
+		return nil
+	}
+
+	persisted, err := s.store.ListSessions(ctx)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.sessions == nil {
+		s.sessions = make(map[string]*session.Session)
+	}
+
+	// Convert agent sessions to UI sessions
+	for _, ps := range persisted {
+		sess := &session.Session{
+			ID:        ps.ID,
+			CreatedAt: ps.StartedAt,
+			UpdatedAt: ps.LastActive,
+			Metadata: session.SessionMetadata{
+				Title:        ps.Metadata["title"],
+				MessageCount: 0, // Would need to load messages to count
+			},
+		}
+		s.sessions[sess.ID] = sess
+	}
+
+	return nil
 }
 
 // List returns sessions.
 func (s *sessionMgr) List(ctx context.Context) ([]session.Session, error) {
+	s.mu.RLock()
+	hasSessions := len(s.sessions) > 0
+	s.mu.RUnlock()
+
+	// If no sessions in memory, try loading from persistent storage
+	if !hasSessions {
+		s.loadPersistedSessions(ctx)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []session.Session
@@ -153,6 +229,11 @@ func (s *sessionMgr) List(ctx context.Context) ([]session.Session, error) {
 
 // Delete deletes a session.
 func (s *sessionMgr) Delete(ctx context.Context, id string) error {
+	// Also delete from persistent storage
+	if s.store != nil {
+		s.store.DeleteSession(ctx, id)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, id)

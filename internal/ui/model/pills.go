@@ -54,7 +54,9 @@ func hasInProgressTodo(todos []session.Todo) bool {
 
 // queuePill renders the queue count pill with gradient triangles.
 func queuePill(queue int, focused, panelFocused bool, t *styles.Styles) string {
-	if queue <= 0 {
+	// Only show when there are actual queued prompts (queue > 1)
+	// queue == 1 means only the current message is being processed
+	if queue <= 1 {
 		return ""
 	}
 	triangles := styles.ForegroundGrad(t, "▶▶▶▶▶▶▶▶▶", false, t.RedDark, t.Secondary)
@@ -199,7 +201,9 @@ func (m *UI) pillsAreaHeight() int {
 		return 0
 	}
 	hasIncomplete := hasIncompleteTodos(m.session.GetTodos())
-	hasQueue := m.promptQueue > 0
+	// Only show queue pill when there are queued prompts (pendingCount > 1)
+	// pendingCount == 1 means only the current message is being processed
+	hasQueue := m.promptQueue > 1
 	hasPills := hasIncomplete || hasQueue
 	if !hasPills {
 		return 0
@@ -232,7 +236,9 @@ func (m *UI) renderPills() {
 	contentWidth := max(width-paddingLeft, 0)
 
 	hasIncomplete := hasIncompleteTodos(m.session.GetTodos())
-	hasQueue := m.promptQueue > 0
+	// Only show queue pill when there are queued prompts (pendingCount > 1)
+	// pendingCount == 1 means only the current message is being processed
+	hasQueue := m.promptQueue > 1
 
 	if !hasIncomplete && !hasQueue {
 		return

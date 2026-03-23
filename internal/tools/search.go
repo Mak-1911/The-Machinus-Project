@@ -276,6 +276,25 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) (types.Tool
 		headLimit = limit
 	}
 
+	// Binary file extensions to skip
+	binaryExts := map[string]bool{
+		".db": true, ".sqlite": true, ".sqlite3": true,
+		".exe": true, ".dll": true, ".so": true, ".dylib": true,
+		".zip": true, ".tar": true, ".gz": true, ".rar": true, ".7z": true,
+		".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".ico": true,
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+		".mp3": true, ".mp4": true, ".avi": true, ".mov": true, ".wav": true,
+		".bin": true, ".dat": true,
+	}
+
+	// Directories to skip entirely
+	skipDirs := map[string]bool{
+		".git": true, "node_modules": true, "vendor": true,
+		".crush": true, "target": true, "build": true, "dist": true,
+		".cache": true, "__pycache__": true, "bin": true, ".vscode": true,
+		".idea": true, ".claude": true,
+	}
+
 	type Match struct {
 		File    string
 		Line    int
@@ -287,13 +306,27 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) (types.Tool
 
 	// Walk directory
 	err = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return nil
+		}
+
+		// Skip certain directories entirely
+		if info.IsDir() {
+			if skipDirs[info.Name()] {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
 		// Check head limit
 		if headLimit > 0 && matchCount >= headLimit {
 			return fmt.Errorf("max results reached")
+		}
+
+		// Skip binary files by extension
+		ext := strings.ToLower(filepath.Ext(path))
+		if binaryExts[ext] {
+			return nil
 		}
 
 		// Apply glob filter to filename
@@ -306,6 +339,13 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) (types.Tool
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return nil // Skip files we can't read
+		}
+
+		// Quick binary check - skip files with null bytes
+		for _, b := range content {
+			if b == 0 {
+				return nil // Skip binary file
+			}
 		}
 
 		// Search line by line

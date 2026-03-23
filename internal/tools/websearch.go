@@ -59,41 +59,18 @@ func (t *WebSearchTool) Name() string {
 }
 
 func (t *WebSearchTool) Description() string {
-	return "Perform web searches using DuckDuckGo API to find information on the internet. Returns relevant results including summaries, answers, and links."
+	return "Search the web for current information using DuckDuckGo API."
 }
 
 func (t *WebSearchTool) Examples() []types.ToolExample {
 	return []types.ToolExample{
-		{
-			Input: map[string]any{
-				"query": "golang programming language",
-			},
-			Description: "Search for information about Go programming language",
-		},
-		{
-			Input: map[string]any{
-				"query": "best practices REST API design",
-			},
-			Description: "Search for REST API design best practices",
-		},
-		{
-			Input: map[string]any{
-				"query": "how to install docker on ubuntu",
-			},
-			Description: "Search for Docker installation instructions",
-		},
-		{
-			Input: map[string]any{
-				"query": "machine learning libraries python",
-				"max_results": 5,
-			},
-			Description: "Search with limited number of results",
-		},
+		{Input: map[string]any{"query": "golang tutorial"}, Description: "Search for Go tutorials"},
+		{Input: map[string]any{"query": "docker install"}, Description: "Search Docker installation"},
 	}
 }
 
 func (t *WebSearchTool) WhenToUse() string {
-	return "Use when you need to find information from the internet, look up documentation, research topics, or get current information that isn't in your knowledge base or local files."
+	return "Use when you need current information from the internet."
 }
 
 func (t *WebSearchTool) ChainsWith() []string {

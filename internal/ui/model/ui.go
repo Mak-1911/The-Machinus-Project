@@ -176,6 +176,9 @@ type (
 
 	// checkAgentProgressMsg is sent to check for more agent progress events.
 	checkAgentProgressMsg struct{}
+
+	// loaderTickMsg is sent to advance the loader animation frame.
+	loaderTickMsg struct{}
 )
 
 // UI represents the main user interface model.
@@ -275,6 +278,10 @@ type UI struct {
 	todoSpinner    spinner.Model
 	todoIsSpinning bool
 
+	// Agent loading animation (above input bar)
+	loaderFrame    int
+	loaderFrames   []string
+
 	// Tracks tool message items currently being executed, keyed by tool ID
 	pendingToolItems map[string]chat.ToolMessageItem
 
@@ -351,6 +358,20 @@ func New(com *common.Common) *UI {
 		lspStates:   make(map[string]*app.LSPClientInfo),
 		mcpStates:   make(map[string]mcp.ClientInfo),
 		pendingToolItems: make(map[string]chat.ToolMessageItem),
+		loaderFrames: []string{
+			"█    ",
+			"▒█   ",
+			"░▒█  ",
+			" ░▒█ ",
+			"  ░▒█",
+			"   ░▒█",
+			"     █",
+			"    █▒",
+			"   █▒░",
+			"  █▒░ ",
+			" █▒░  ",
+			"█▒░  ",
+		},
 	}
 
 	status := NewStatus(com, ui)
@@ -667,6 +688,17 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return checkAgentProgressMsg{}
 				}))
 			}
+		}
+
+	case loaderTickMsg:
+		// Advance the loader animation frame
+		if m.isAgentBusy() {
+			m.loaderFrame = (m.loaderFrame + 1) % len(m.loaderFrames)
+			cmds = append(cmds, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+				return loaderTickMsg{}
+			}))
+		} else {
+			m.loaderFrame = 0
 		}
 
 	case userCommandsLoadedMsg:
@@ -1844,6 +1876,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 
 				m.randomizePlaceholders()
 				m.historyReset()
+				// Clear queue indicator when sending a new message
+				m.promptQueue = 0
+				m.renderPills()
 
 				return tea.Batch(m.sendMessage(value, attachments...), m.loadPromptHistory())
 			case key.Matches(msg, m.keyMap.Chat.NewSession):
@@ -2112,6 +2147,12 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 			uv.NewStyledString(m.pillsView).Draw(scr, layout.pills)
 		}
 
+		// Draw loader animation above editor if agent is busy
+		if layout.loader.Dy() > 0 {
+			loaderView := uv.NewStyledString(m.renderLoaderView())
+			loaderView.Draw(scr, layout.loader)
+		}
+
 		// Editor width should match the editor rectangle width
 		editorWidth := layout.editor.Dx()
 		editor := uv.NewStyledString(m.renderEditorView(editorWidth))
@@ -2179,8 +2220,8 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 		if m.textarea.Focused() {
 			cur := m.textarea.Cursor()
-			cur.X++                            // Adjust for app margins
-			cur.Y += m.layout.editor.Min.Y + 1 // Offset for attachments row
+			cur.X += m.layout.editor.Min.X + 1 // Adjust for editor X position + left border
+			cur.Y += m.layout.editor.Min.Y + 2 // Offset for attachments row and top border
 			return cur
 		}
 	}
@@ -2481,11 +2522,11 @@ func (m *UI) updateSize() {
 	m.status.SetWidth(m.layout.status.Dx())
 
 	m.chat.SetSize(m.layout.main.Dx(), m.layout.main.Dy())
-	m.textarea.SetWidth(m.layout.editor.Dx())
+	m.textarea.SetWidth(m.layout.editor.Dx() - 2) // Account for rounded border (1 char on each side)
 	// TODO: Abstract the textarea and attachments into a single editor
 	// component so we don't have to manually account for the attachments
 	// height here.
-	m.textarea.SetHeight(m.layout.editor.Dy() - 2) // Account for top margin/attachments and bottom margin
+	m.textarea.SetHeight(max(m.layout.editor.Dy()-4, 2)) // Account for top/bottom margin and rounded border (2 rows), min height 2
 	m.renderPills()
 
 	// Handle different app states
@@ -2578,6 +2619,12 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 		headerRect, remainingRect := layoutSplit.SplitVertical(appRect, layoutSplit.Fixed(headerHeight))
 		uiLayout.header = headerRect
 
+		// Loader height: 1 line when agent is busy, 0 otherwise
+		loaderHeight := 0
+		if m.isAgentBusy() {
+			loaderHeight = 1
+		}
+
 		if m.isCompact {
 			// Layout with header only (no sidebar)
 			//
@@ -2599,6 +2646,16 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			mainRect.Min.Y += 1
 			mainRect, editorRect := layoutSplit.SplitVertical(mainRect, layoutSplit.Fixed(mainRect.Dy()-editorHeight))
 			mainRect.Max.X -= 1 // Add padding right
+
+			// Split editor area into loader (if agent busy) and actual editor
+			if loaderHeight > 0 {
+				loaderRect, editorRect := layoutSplit.SplitVertical(editorRect, layoutSplit.Fixed(loaderHeight))
+				uiLayout.loader = loaderRect
+				uiLayout.editor = editorRect
+			} else {
+				uiLayout.editor = editorRect
+			}
+
 			pillsHeight := m.pillsAreaHeight()
 			if pillsHeight > 0 {
 				pillsHeight = min(pillsHeight, mainRect.Dy())
@@ -2610,7 +2667,6 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			}
 			// Add bottom margin to main
 			uiLayout.main.Max.Y -= 1
-			uiLayout.editor = editorRect
 		} else {
 			// Layout with header and sidebar
 			//
@@ -2626,6 +2682,16 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			sideRect.Min.X += 1
 			mainRect, editorRect := layoutSplit.SplitVertical(mainRect, layoutSplit.Fixed(mainRect.Dy()-editorHeight))
 			mainRect.Max.X -= 1 // Add padding right
+
+			// Split editor area into loader (if agent busy) and actual editor
+			if loaderHeight > 0 {
+				loaderRect, editorRect := layoutSplit.SplitVertical(editorRect, layoutSplit.Fixed(loaderHeight))
+				uiLayout.loader = loaderRect
+				uiLayout.editor = editorRect
+			} else {
+				uiLayout.editor = editorRect
+			}
+
 			uiLayout.sidebar = sideRect
 			pillsHeight := m.pillsAreaHeight()
 			if pillsHeight > 0 {
@@ -2638,7 +2704,6 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			}
 			// Add bottom margin to main
 			uiLayout.main.Max.Y -= 1
-			uiLayout.editor = editorRect
 		}
 	}
 
@@ -2664,6 +2729,9 @@ type uiLayout struct {
 
 	// editor is the area for the editor pane.
 	editor uv.Rectangle
+
+	// loader is the area for the loader animation above the editor.
+	loader uv.Rectangle
 
 	// sidebar is the area for the sidebar.
 	sidebar uv.Rectangle
@@ -2969,11 +3037,30 @@ func (m *UI) renderEditorView(width int) string {
 	if len(m.attachments.List()) > 0 {
 		attachmentsView = m.attachments.Render(width)
 	}
+
+	// Wrap textarea with rounded border
+	editorStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.com.Styles.BorderColor)
+
+	borderedTextarea := editorStyle.Render(m.textarea.View())
+
 	return strings.Join([]string{
 		attachmentsView,
-		m.textarea.View(),
+		borderedTextarea,
 		"", // margin at bottom of editor
 	}, "\n")
+}
+
+// renderLoaderView renders the loader animation.
+func (m *UI) renderLoaderView() string {
+	if !m.isAgentBusy() || len(m.loaderFrames) == 0 {
+		return ""
+	}
+	frame := m.loaderFrames[m.loaderFrame]
+	return lipgloss.NewStyle().
+		Foreground(m.com.Styles.Secondary).
+		Render(frame)
 }
 
 // cacheSidebarLogo renders and caches the sidebar logo at the specified width.
@@ -3059,8 +3146,9 @@ func (m *UI) sendMessage(content string, attachmentList ...message.Attachment) t
 		responseCh <- response
 	}()
 
-	// Start the progress polling loop
+	// Start the progress polling loop and loader animation
 	cmds = append(cmds, func() tea.Msg { return checkAgentProgressMsg{} })
+	cmds = append(cmds, func() tea.Msg { return loaderTickMsg{} })
 
 	return tea.Batch(cmds...)
 }

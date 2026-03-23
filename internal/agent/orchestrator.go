@@ -12,6 +12,21 @@ import (
 	"github.com/machinus/cloud-agent/internal/types"
 )
 
+// ProgressEvent represents a progress update event.
+type ProgressEvent struct {
+	Type      string // "tool_start" or "tool_complete"
+	ToolID    string
+	ToolName  string
+	ToolArgs  string // JSON encoded arguments
+	Result    string // Tool result output
+	IsError   bool
+	Duration  int64  // Duration in milliseconds
+	Args      map[string]any // Parsed arguments for easier access
+}
+
+// ProgressCallback is called when there's a progress update.
+type ProgressCallback func(event ProgressEvent)
+
 // Orchestrator coordinates the planning and execution of tasks
 type Orchestrator struct {
 	planner      	*planner.Planner
@@ -21,6 +36,8 @@ type Orchestrator struct {
 	logWriter    	LogWriter
 	sessionManager *SessionManager
 	sessionID 		string
+	progressCB   	ProgressCallback
+	toolSelector 	*ToolSelector  // Heuristic tool selector
 }
 
 // Store defines the storage interface for the orchestrator
@@ -54,6 +71,26 @@ func NewOrchestrator(
 		logWriter: 		logWriter,
 		sessionManager: sessionMgr,
 		sessionID: 		sessionID,
+		toolSelector: 	NewToolSelector(tools),
+	}
+}
+
+// SetProgressCallback sets the callback for progress updates.
+func (o *Orchestrator) SetProgressCallback(cb ProgressCallback) {
+	o.progressCB = cb
+}
+
+// sendProgress sends a progress event if a callback is registered.
+func (o *Orchestrator) sendProgress(event ProgressEvent) {
+	if o.progressCB != nil {
+		o.progressCB(event)
+	}
+}
+
+// log writes a log entry if logWriter is available.
+func (o *Orchestrator) log(ctx context.Context, taskID, level, message string, step int) {
+	if o.logWriter != nil {
+		o.log(ctx, taskID, level, message, step)
 	}
 }
 
@@ -96,7 +133,7 @@ func (o *Orchestrator) executeWithRetry(ctx context.Context, tool types.Tool, to
 		// If successful, return immediately
 		if result.Success {
 			history.Success = true
-			o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Tool succeeded on attempt %d", attemptNum+1), step)
+			o.log(ctx, taskID, "info", fmt.Sprintf("Tool succeeded on attempt %d", attemptNum+1), step)
 			// Add execution history to result data
 			if dataMap, ok := result.Data.(map[string]any); ok {
 				dataMap["execution_history"] = history
@@ -108,7 +145,7 @@ func (o *Orchestrator) executeWithRetry(ctx context.Context, tool types.Tool, to
 
 		// Check if we should retry
 		if !result.Retryable {
-			o.logWriter.Write(ctx, taskID, "warning", fmt.Sprintf("Tool failed with non-retryable error: %s", result.Error), step)
+			o.log(ctx, taskID, "warning", fmt.Sprintf("Tool failed with non-retryable error: %s", result.Error), step)
 			history.Success = false
 			if dataMap, ok := result.Data.(map[string]any); ok {
 				dataMap["execution_history"] = history
@@ -120,7 +157,7 @@ func (o *Orchestrator) executeWithRetry(ctx context.Context, tool types.Tool, to
 
 		// Last attempt - don't retry
 		if attemptNum == maxAttempts-1 {
-			o.logWriter.Write(ctx, taskID, "warning", fmt.Sprintf("Tool failed after %d attempts: %s", maxAttempts, result.Error), step)
+			o.log(ctx, taskID, "warning", fmt.Sprintf("Tool failed after %d attempts: %s", maxAttempts, result.Error), step)
 			history.Success = false
 			if dataMap, ok := result.Data.(map[string]any); ok {
 				dataMap["execution_history"] = history
@@ -136,13 +173,13 @@ func (o *Orchestrator) executeWithRetry(ctx context.Context, tool types.Tool, to
 			backoffMs = policy.MaxBackoff
 		}
 
-		o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Attempt %d failed, retrying in %dms: %s", attemptNum+1, backoffMs, result.Error), step)
+		o.log(ctx, taskID, "info", fmt.Sprintf("Attempt %d failed, retrying in %dms: %s", attemptNum+1, backoffMs, result.Error), step)
 
 		// Adaptive retry: Try alternative tools if suggested
 		if len(result.Alternatives) > 0 && attemptNum == 1 {
 			altToolName := result.Alternatives[0]
 			if altTool, ok := o.tools[altToolName]; ok {
-				o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Trying alternative tool: %s", altToolName), step)
+				o.log(ctx, taskID, "info", fmt.Sprintf("Trying alternative tool: %s", altToolName), step)
 				// Try alternative tool (simple substitution - in future, transform args appropriately)
 				altResult := o.executeWithRetry(ctx, altTool, altToolName, args, taskID, step)
 				if altDataMap, ok := altResult.Data.(map[string]any); ok {
@@ -158,7 +195,7 @@ func (o *Orchestrator) executeWithRetry(ctx context.Context, tool types.Tool, to
 			// For timeouts, increase timeout if available
 			if timeoutVal, ok := args["timeout"].(int); ok {
 				args["timeout"] = timeoutVal * 2
-				o.logWriter.Write(ctx, taskID, "info", fmt.Sprintf("Increased timeout to %d", args["timeout"]), step)
+				o.log(ctx, taskID, "info", fmt.Sprintf("Increased timeout to %d", args["timeout"]), step)
 			}
 		}
 
@@ -212,7 +249,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 	// Retrieve relevant memories
 	memories, err := o.memory.Retrieve(ctx, userID, message)
 	if err != nil {
-		o.logWriter.Write(ctx, task.ID, "warning", fmt.Sprintf("Failed to retrieve memories: %v", err), 0)
+		o.log(ctx, task.ID, "warning", fmt.Sprintf("Failed to retrieve memories: %v", err), 0)
 	}
 
 	// Load conversation history from session
@@ -221,15 +258,25 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 	if o.sessionManager != nil && o.sessionID != "" {
 		session, err := o.sessionManager.GetSession(ctx, o.sessionID)
 		if err == nil && session != nil && len(session.Messages) > 0 {
+			// === CONTEXT COMPRESSION ===
+			// Only load recent messages to prevent context bloat
+			// Keep last 10 messages (approx 5 exchanges: user + assistant/tool pairs)
+			maxHistory := 10
+			messages := session.Messages
+			if len(messages) > maxHistory {
+				messages = messages[len(messages)-maxHistory:]
+				o.log(ctx, task.ID, "info", fmt.Sprintf("Session has %d messages, loading only last %d", len(session.Messages), maxHistory), 0)
+			}
+
 			// Convert session messages to planner format
-			for _, msg := range session.Messages {
+			for _, msg := range messages {
 				conversation = append(conversation, planner.ConversationMessage{
 					Role:    msg.Role,
 					Content: msg.Content,
 					ToolID:  msg.ToolID,
 				})
 			}
-			o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Loaded %d messages from session", len(session.Messages)), 0)
+			o.log(ctx, task.ID, "info", fmt.Sprintf("Loaded %d messages from session", len(messages)), 0)
 		}
 	}
 
@@ -240,7 +287,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 	})
 
 	// Continuation loop - keep executing tools until LLM returns final text
-	o.logWriter.Write(ctx, task.ID, "info", "Processing request...", 0)
+	o.log(ctx, task.ID, "info", "Processing request...", 0)
 	task.Status = "executing"
 	task.UpdatedAt = time.Now()
 	o.store.SaveTask(ctx, task)
@@ -250,7 +297,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 	maxIterations := 20 // Safety limit
 
 	for iteration := 0; iteration < maxIterations; iteration++ {
-		o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Iteration %d: Thinking...", iteration+1), iteration)
+		o.log(ctx, task.ID, "info", fmt.Sprintf("Iteration %d: Thinking...", iteration+1), iteration)
 
 		// Call LLM to get next action
 		toolCalls, response, err := o.planner.Continue(ctx, conversation, memories)
@@ -265,7 +312,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 		// Case 1: LLM returned text - we're done
 		if response != "" {
 			finalResponse = response
-			o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Final response: %s", truncate(response, 200)), iteration)
+			o.log(ctx, task.ID, "info", fmt.Sprintf("Final response: %s", truncate(response, 200)), iteration)
 			break
 		}
 
@@ -285,13 +332,32 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 				o.store.SaveTask(ctx, task)
 
 				toolName := toolCall.Function.Name
-				o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Executing: %s", toolName), iteration)
+
+				// === HEURISTIC TOOL SELECTION VALIDATION ===
+				// For the first iteration, get heuristic suggestions
+				if iteration == 0 {
+					// Get heuristic suggestions for the original user message
+					suggestions := o.toolSelector.AnalyzeRequest(message)
+					if len(suggestions) > 0 {
+						shouldOverride, reason := o.toolSelector.ShouldOverrideLLM(suggestions, toolName)
+						if shouldOverride {
+							o.log(ctx, task.ID, "info", fmt.Sprintf("[Heuristic Override] %s - Suggested: %s instead of %s", reason, suggestions[0].Tool, toolName), iteration)
+							// Optionally override - for now just log and let LLM proceed
+							// Uncomment below to actually override:
+							// toolName = suggestions[0].Tool
+						} else {
+							o.log(ctx, task.ID, "debug", fmt.Sprintf("[Heuristic] LLM choice '%s' validated (confidence: %.0f%%)", toolName, suggestions[0].Confidence*100), iteration)
+						}
+					}
+				}
+
+				o.log(ctx, task.ID, "info", fmt.Sprintf("Executing: %s", toolName), iteration)
 
 				// Get tool
 				tool, ok := o.tools[toolName]
 				if !ok {
 					lastError = fmt.Errorf("unknown tool: %s", toolName)
-					o.logWriter.Write(ctx, task.ID, "error", lastError.Error(), iteration)
+					o.log(ctx, task.ID, "error", lastError.Error(), iteration)
 
 					// Add error as tool result
 					conversation = append(conversation, planner.ConversationMessage{
@@ -304,10 +370,11 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 
 				// Parse arguments
 				var args map[string]any
+				var argsJSON string = toolCall.Function.Arguments
 				if toolCall.Function.Arguments != "" {
 					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
 						lastError = fmt.Errorf("failed to parse arguments: %w", err)
-						o.logWriter.Write(ctx, task.ID, "error", lastError.Error(), iteration)
+						o.log(ctx, task.ID, "error", lastError.Error(), iteration)
 
 						conversation = append(conversation, planner.ConversationMessage{
 							Role:    "tool",
@@ -318,13 +385,66 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 					}
 				}
 
+				// Send tool_start progress event
+				o.sendProgress(ProgressEvent{
+					Type:     "tool_start",
+					ToolID:   toolCall.ID,
+					ToolName: toolName,
+					ToolArgs: argsJSON,
+					Args:     args,
+				})
+
 				// Execute tool with retry logic (Claude Code style)
 				result := o.executeWithRetry(ctx, tool, toolName, args, task.ID, iteration)
+
+				// Extract duration for progress event
+				durationMs := int64(0)
+				if dataMap, ok := result.Data.(map[string]any); ok {
+					if hist, ok := dataMap["execution_history"].(types.ExecutionHistory); ok {
+						durationMs = hist.Duration
+					}
+				}
+
+				// Send tool_complete progress event
+				o.sendProgress(ProgressEvent{
+					Type:     "tool_complete",
+					ToolID:   toolCall.ID,
+					ToolName: toolName,
+					ToolArgs: argsJSON,
+					Args:     args,
+					Result:   result.Output,
+					IsError:  !result.Success,
+					Duration: durationMs,
+				})
+
+				// === METRICS TRACKING ===
+				// Record execution metrics for heuristic learning
+				o.toolSelector.RecordResult(toolName, result.Success, durationMs, result.FailureType)
+
+				// === HEURISTIC ALTERNATIVE SUGGESTIONS ===
+				// If tool failed, get heuristic alternative suggestions
+				if !result.Success {
+					heuristicAlternatives := o.toolSelector.SuggestAlternatives(toolName, result.Error, args)
+					if len(heuristicAlternatives) > 0 {
+						o.log(ctx, task.ID, "info", fmt.Sprintf("[Heuristic] Suggested alternatives for %s: %v", toolName, heuristicAlternatives), iteration)
+						// Add to result's alternatives if not already present
+						altSet := make(map[string]bool)
+						for _, alt := range result.Alternatives {
+							altSet[alt] = true
+						}
+						for _, alt := range heuristicAlternatives {
+							if !altSet[alt] && alt != toolName {
+								result.Alternatives = append(result.Alternatives, alt)
+								altSet[alt] = true
+							}
+						}
+					}
+				}
 
 				// Handle execution errors
 				if !result.Success && result.Error == "" {
 					lastError = fmt.Errorf("tool execution error")
-					o.logWriter.Write(ctx, task.ID, "error", lastError.Error(), iteration)
+					o.log(ctx, task.ID, "error", lastError.Error(), iteration)
 
 					conversation = append(conversation, planner.ConversationMessage{
 						Role:    "tool",
@@ -336,7 +456,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 
 				// Log result with execution context
 				if result.Success {
-					o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Output: %s", truncate(result.Output, 500)), iteration)
+					o.log(ctx, task.ID, "info", fmt.Sprintf("Output: %s", truncate(result.Output, 500)), iteration)
 				} else {
 					// Log failure type and retry info
 					retryInfo := ""
@@ -345,7 +465,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 							retryInfo = fmt.Sprintf(" (attempts: %d)", len(hist.Attempts))
 						}
 					}
-					o.logWriter.Write(ctx, task.ID, "error", fmt.Sprintf("Tool error [%s]: %s%s", result.FailureType, result.Error, retryInfo), iteration)
+					o.log(ctx, task.ID, "error", fmt.Sprintf("Tool error [%s]: %s%s", result.FailureType, result.Error, retryInfo), iteration)
 					lastError = fmt.Errorf("tool failed: %s", result.Error)
 				}
 
@@ -359,6 +479,17 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 						resultContent = fmt.Sprintf("Error: %s", result.Error)
 					}
 				}
+
+				// === CONTEXT COMPRESSION ===
+				// Truncate per-tool-type to prevent context explosion
+				// Different tools have different output size requirements
+				maxOutputSize := getMaxOutputSize(toolName)
+				if len(resultContent) > maxOutputSize {
+					originalLen := len(resultContent)
+					resultContent = truncate(resultContent, maxOutputSize)
+					resultContent += fmt.Sprintf("\n\n[Output truncated: was %d bytes, showing first %d]", originalLen, maxOutputSize)
+				}
+
 				conversation = append(conversation, planner.ConversationMessage{
 					Role:    "tool",
 					Content: resultContent,
@@ -380,10 +511,10 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 	// Finalize task
 	if lastError == nil {
 		task.Status = "completed"
-		o.logWriter.Write(ctx, task.ID, "info", "Task completed successfully", len(conversation))
+		o.log(ctx, task.ID, "info", "Task completed successfully", len(conversation))
 	} else {
 		task.Status = "completed" // Still mark as completed if we got a response
-		o.logWriter.Write(ctx, task.ID, "warning", fmt.Sprintf("Task completed with some errors: %v", lastError), len(conversation))
+		o.log(ctx, task.ID, "warning", fmt.Sprintf("Task completed with some errors: %v", lastError), len(conversation))
 	}
 
 	// Store final response if available
@@ -400,13 +531,13 @@ func (o *Orchestrator) Execute(ctx context.Context, userID, message string) (*Ta
 	if o.sessionManager != nil && o.sessionID != "" {
 		// Save user message
 		if err := o.sessionManager.AddMessage(ctx, o.sessionID, "user", message, ""); err == nil {
-			o.logWriter.Write(ctx, task.ID, "info", "Saved user message to session", 0)
+			o.log(ctx, task.ID, "info", "Saved user message to session", 0)
 		}
 
 		// Save assistant response if available
 		if finalResponse != "" {
 			if err := o.sessionManager.AddMessage(ctx, o.sessionID, "assistant", finalResponse, ""); err == nil {
-				o.logWriter.Write(ctx, task.ID, "info", "Saved assistant response to session", 0)
+				o.log(ctx, task.ID, "info", "Saved assistant response to session", 0)
 			}
 		}
 	}
@@ -454,11 +585,11 @@ func (o *Orchestrator) ExecuteWithPlan(ctx context.Context, userID, message stri
 	// Retrieve relevant memories
 	memories, err := o.memory.Retrieve(ctx, userID, message)
 	if err != nil {
-		o.logWriter.Write(ctx, task.ID, "warning", fmt.Sprintf("Failed to retrieve memories: %v", err), 0)
+		o.log(ctx, task.ID, "warning", fmt.Sprintf("Failed to retrieve memories: %v", err), 0)
 	}
 
 	// Generate plan or get conversational response
-	o.logWriter.Write(ctx, task.ID, "info", "Processing request...", 0)
+	o.log(ctx, task.ID, "info", "Processing request...", 0)
 	plan, response, err := o.planner.Plan(ctx, message, memories)
 	if err != nil {
 		task.Status = "failed"
@@ -476,7 +607,7 @@ func (o *Orchestrator) ExecuteWithPlan(ctx context.Context, userID, message stri
 		task.CompletedAt = &now
 		task.UpdatedAt = now
 		o.store.SaveTask(ctx, task)
-		o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Response: %s", truncate(response, 200)), 0)
+		o.log(ctx, task.ID, "info", fmt.Sprintf("Response: %s", truncate(response, 200)), 0)
 		return task, nil
 	}
 
@@ -486,7 +617,7 @@ func (o *Orchestrator) ExecuteWithPlan(ctx context.Context, userID, message stri
 	task.UpdatedAt = time.Now()
 	o.store.SaveTask(ctx, task)
 
-	o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Plan: %s", plan.Description), 0)
+	o.log(ctx, task.ID, "info", fmt.Sprintf("Plan: %s", plan.Description), 0)
 
 	// Execute plan steps
 	var lastError error
@@ -495,13 +626,13 @@ func (o *Orchestrator) ExecuteWithPlan(ctx context.Context, userID, message stri
 		task.UpdatedAt = time.Now()
 		o.store.SaveTask(ctx, task)
 
-		o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Step %d: %s", i+1, step.Description), i)
+		o.log(ctx, task.ID, "info", fmt.Sprintf("Step %d: %s", i+1, step.Description), i)
 
 		// Get tool
 		tool, ok := o.tools[step.Tool]
 		if !ok {
 			lastError = fmt.Errorf("unknown tool: %s", step.Tool)
-			o.logWriter.Write(ctx, task.ID, "error", lastError.Error(), i)
+			o.log(ctx, task.ID, "error", lastError.Error(), i)
 			continue
 		}
 
@@ -509,7 +640,7 @@ func (o *Orchestrator) ExecuteWithPlan(ctx context.Context, userID, message stri
 		result, err := tool.Execute(ctx, step.Args)
 		if err != nil {
 			lastError = fmt.Errorf("tool execution error: %w", err)
-			o.logWriter.Write(ctx, task.ID, "error", lastError.Error(), i)
+			o.log(ctx, task.ID, "error", lastError.Error(), i)
 			task.Status = "failed"
 			task.Error = lastError.Error()
 			break
@@ -517,9 +648,9 @@ func (o *Orchestrator) ExecuteWithPlan(ctx context.Context, userID, message stri
 
 		// Log result
 		if result.Success {
-			o.logWriter.Write(ctx, task.ID, "info", fmt.Sprintf("Output: %s", truncate(result.Output, 500)), i)
+			o.log(ctx, task.ID, "info", fmt.Sprintf("Output: %s", truncate(result.Output, 500)), i)
 		} else {
-			o.logWriter.Write(ctx, task.ID, "error", fmt.Sprintf("Tool error: %s", result.Error), i)
+			o.log(ctx, task.ID, "error", fmt.Sprintf("Tool error: %s", result.Error), i)
 			lastError = fmt.Errorf("tool failed: %s", result.Error)
 			// Continue to next step unless it's critical
 		}
@@ -528,7 +659,7 @@ func (o *Orchestrator) ExecuteWithPlan(ctx context.Context, userID, message stri
 	// Finalize task
 	if lastError == nil {
 		task.Status = "completed"
-		o.logWriter.Write(ctx, task.ID, "info", "Task completed successfully", len(plan.Steps))
+		o.log(ctx, task.ID, "info", "Task completed successfully", len(plan.Steps))
 	} else {
 		task.Status = "failed"
 		task.Error = lastError.Error()
@@ -565,6 +696,47 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// getMaxOutputSize returns the max output size for a tool based on its type
+// Tools that return structured/short data get higher limits
+// Tools that return raw content (files, web) get lower limits
+func getMaxOutputSize(toolName string) int {
+	// Tools that need full output - structured responses, search results
+	fullOutputTools := map[string]bool{
+		"grep":       true, // Search results need full matches
+		"glob":       true, // File lists are usually short
+		"list":       true, // Directory listings are short
+		"fileinfo":   true, // File metadata is short
+		"websearch":  true, // Web search results are concise
+		"http":       true, // API responses vary but usually structured
+		"ask_user":   true, // User input is usually short
+		"browser":    true, // Browser results are curated
+	}
+
+	// Tools with moderate output - code edits, commands
+	moderateOutputTools := map[string]int{
+		"edit_file":  5000, // Edit diffs can be long
+		"write_file": 2000, // Confirmations are short
+		"delete":     1000, // Confirmations are short
+		"copy":       1000, // Confirmations are short
+		"move":       1000, // Confirmations are short
+		"mkdir":      1000, // Confirmations are short
+		"echo":       1000, // Mock tool, short output
+	}
+
+	if fullOutputTools[toolName] {
+		return 10000 // Generous limit for structured data
+	}
+
+	if limit, ok := moderateOutputTools[toolName]; ok {
+		return limit
+	}
+
+	// Default: read_file and shell need tighter limits
+	// read_file: file content can be huge, agent rarely needs full file
+	// shell: command output can be verbose, usually only first lines matter
+	return 2000
 }
 
 // StreamLogWriter implements LogWriter with a callback
