@@ -125,3 +125,31 @@ func Capitalize(s string) string {
 	runes[0] = unicode.ToUpper(runes[0])
 	return string(runes)
 }
+
+// PreserveNewlines normalizes spaces but keeps line breaks.
+// Use this for tool output that should maintain line structure.
+func PreserveNewlines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		// Trim leading/trailing whitespace from each line
+		line = strings.TrimLeftFunc(line, unicode.IsSpace)
+		line = strings.TrimRightFunc(line, unicode.IsSpace)
+
+		// Collapse multiple spaces within the line
+		var result strings.Builder
+		inSpace := false
+		for _, r := range line {
+			if unicode.IsSpace(r) {
+				if !inSpace {
+					result.WriteRune(' ')
+					inSpace = true
+				}
+			} else {
+				result.WriteRune(r)
+				inSpace = false
+			}
+		}
+		lines[i] = result.String()
+	}
+	return strings.Join(lines, "\n")
+}

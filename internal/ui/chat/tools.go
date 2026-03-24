@@ -534,7 +534,7 @@ func toolHeader(sty *styles.Styles, status ToolStatus, name string, width int, n
 
 // toolOutputPlainContent renders plain text with optional expansion support.
 func toolOutputPlainContent(sty *styles.Styles, content string, width int, expanded bool) string {
-	content = stringext.NormalizeSpace(content)
+	content = stringext.PreserveNewlines(content)
 	lines := strings.Split(content, "\n")
 
 	maxLines := responseContextHeight
@@ -567,7 +567,7 @@ func toolOutputPlainContent(sty *styles.Styles, content string, width int, expan
 
 // toolOutputCodeContent renders code with syntax highlighting and line numbers.
 func toolOutputCodeContent(sty *styles.Styles, path, content string, offset, width int, expanded bool) string {
-	content = stringext.NormalizeSpace(content)
+	content = stringext.PreserveNewlines(content)
 
 	lines := strings.Split(content, "\n")
 	maxLines := responseContextHeight
@@ -786,7 +786,7 @@ func roundedEnumerator(lPadding, width int) tree.Enumerator {
 
 // toolOutputMarkdownContent renders markdown content with optional truncation.
 func toolOutputMarkdownContent(sty *styles.Styles, content string, width int, expanded bool) string {
-	content = stringext.NormalizeSpace(content)
+	content = stringext.PreserveNewlines(content)
 
 	// Cap width for readability.
 	if width > maxTextWidth {
