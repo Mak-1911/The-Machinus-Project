@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/machinus/cloud-agent/internal/memory"
+	"github.com/machinus/cloud-agent/internal/prompt"
 	"github.com/machinus/cloud-agent/internal/skills"
 	"github.com/machinus/cloud-agent/internal/types"
 	"gopkg.in/yaml.v3"
@@ -26,17 +27,21 @@ type LLMClient struct {
 
 // Planner generates execution plans using LLM
 type Planner struct {
-	client           *LLMClient
-	tools            map[string]types.Tool
-	cachedPrompt     *SystemPromptYAML  // Cached to avoid repeated file reads
-	skillsLoader     *skills.Loader    // Skills system
-	customPrompt	 string
+	client       *LLMClient
+	tools        map[string]types.Tool
+	workDir      string
+	modelName    string
+	skillsLoader *skills.Loader
+	customPrompt string
 }
 
 // NewPlanner creates a new planner
 func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool, skillsLoader *skills.Loader) *Planner {
-	// Pre-load and cache the YAML prompt at initialization
-	yamlPrompt := loadSystemPromptYAMLStatic()
+	// Get working directory
+	workDir := "."
+	if wd, err := os.Getwd(); err == nil {
+		workDir = wd
+	}
 
 	return &Planner{
 		client: &LLMClient{
@@ -48,7 +53,8 @@ func NewPlanner(baseURL, apiKey, model string, tools map[string]types.Tool, skil
 			},
 		},
 		tools:        tools,
-		cachedPrompt: yamlPrompt, // Cache at startup
+		workDir:      workDir,
+		modelName:    model,
 		skillsLoader: skillsLoader,
 	}
 }
@@ -364,13 +370,29 @@ func (p *Planner) Continue(ctx context.Context, messages []ConversationMessage, 
 }
 
 func (p *Planner) buildSystemPrompt(tools []ToolDef) string {
-	// Use cached YAML prompt if available, otherwise fallback
-	if p.cachedPrompt != nil {
-		return p.buildPromptFromYAML(p.cachedPrompt, tools)
+	// Use custom prompt if provided
+	if p.customPrompt != "" {
+		return p.customPrompt
 	}
 
-	// Fallback to hardcoded prompt if YAML not cached
-	return p.buildFallbackSystemPrompt(tools)
+	// Use dynamic prompt builder
+	cfg := prompt.Config{
+		Mode:          prompt.ModeFull,
+		WorkDir:       p.workDir,
+		ModelName:     p.modelName,
+		Tools:         p.tools,
+		SafetyEnabled: true,
+	}
+
+	// Add skills if available
+	if p.skillsLoader != nil {
+		skills := p.skillsLoader.ListSkills()
+		for _, s := range skills {
+			cfg.Skills = append(cfg.Skills, s.Name)
+		}
+	}
+
+	return prompt.BuildFull(cfg)
 }
 
 // loadSystemPromptYAMLStatic loads and parses the system prompt YAML file
@@ -1273,6 +1295,12 @@ func (c *LLMClient) CallWithMessages(ctx context.Context, messages []map[string]
 
 // NewPlannerWithPrompt: Creates a Planner with custom system prompt
 func NewPlannerWithPrompt(baseURL, apiKey, model string, tools map[string]types.Tool, customPrompt string, skillsLoader *skills.Loader) *Planner {
+	// Get working directory
+	workDir := "."
+	if wd, err := os.Getwd(); err == nil {
+		workDir = wd
+	}
+
 	return &Planner{
 		client: &LLMClient{
 			BaseURL: baseURL,
@@ -1282,8 +1310,10 @@ func NewPlannerWithPrompt(baseURL, apiKey, model string, tools map[string]types.
 				Timeout: 120 * time.Second,
 			},
 		},
-			tools: 		tools,
-			customPrompt: customPrompt,
-			skillsLoader: skillsLoader,
+		tools:        tools,
+		workDir:      workDir,
+		modelName:    model,
+		customPrompt: customPrompt,
+		skillsLoader: skillsLoader,
 	}
 }

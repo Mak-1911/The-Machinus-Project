@@ -6,6 +6,7 @@ import (
 
 	"github.com/machinus/cloud-agent/internal/agent"
 	"github.com/machinus/cloud-agent/internal/planner"
+	"github.com/machinus/cloud-agent/internal/prompt"
 	"github.com/machinus/cloud-agent/internal/types"
 )
 
@@ -22,6 +23,7 @@ type LLMConfig struct {
 	BaseURL 	string
 	APIKey		string
 	Model 		string
+	WorkDir		string
 }
 
 type Status string
@@ -59,9 +61,19 @@ func New(config SubagentConfig, toolRegistry map[string]types.Tool, llmConfig LL
 	}
 
 	// Build system prompt
-	systemPrompt := config.SystemPrompt
-	if systemPrompt == "" {
-		systemPrompt = buildDefaultPrompt()
+	var systemPrompt string
+	if config.SystemPrompt != "" {
+		systemPrompt = config.SystemPrompt
+	} else {
+		// Use dynamic prompt builder with minimal mode for subagents
+		cfg := prompt.Config{
+			Mode:          prompt.ModeMinimal,
+			WorkDir:       llmConfig.WorkDir,
+			ModelName:     llmConfig.Model,
+			Tools:         tools,
+			SafetyEnabled: false, // No safety for subagents
+		}
+		systemPrompt = prompt.NewBuilder(cfg).Build()
 	}
 
 	// Create planner with filtered tools
@@ -71,7 +83,7 @@ func New(config SubagentConfig, toolRegistry map[string]types.Tool, llmConfig LL
 		llmConfig.Model,
 		tools,
 		systemPrompt,
-		nil, 			// No skills for subagents currently
+		nil, // No skills for subagents currently
 	)
 
 	// Orchestrator with a fresh session (no history)

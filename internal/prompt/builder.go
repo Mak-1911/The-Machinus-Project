@@ -104,10 +104,8 @@ func (pb *PromptBuilder) Build() string {
 
 // buildIdentity creates the base identity section.
 func (pb *PromptBuilder) buildIdentity() string {
-	return `You are Machinus, an autonomous AI coding agent.
-
-You help users with software engineering tasks: writing code, debugging, refactoring, explaining code, and more.
-
+	return `Your name is Machinus,You are an autonomous general AI agent.
+You help users with tasks that a general purpose agent does, like computer use, coding, tasks.
 You think step-by-step, use tools deliberately, and communicate clearly about what you're doing.`
 }
 
@@ -116,23 +114,18 @@ func (pb *PromptBuilder) buildRuntime() string {
 	var sb strings.Builder
 
 	sb.WriteString("## Runtime\n\n")
-
 	// OS and architecture
 	sb.WriteString(fmt.Sprintf("- **OS:** %s/%s\n", runtime.GOOS, runtime.GOARCH))
-
 	// Working directory
 	if pb.config.WorkDir != "" {
 		sb.WriteString(fmt.Sprintf("- **Workspace:** %s\n", pb.config.WorkDir))
 	}
-
 	// Model
 	if pb.config.ModelName != "" {
 		sb.WriteString(fmt.Sprintf("- **Model:** %s\n", pb.config.ModelName))
 	}
-
 	// Current time
 	sb.WriteString(fmt.Sprintf("- **Time:** %s\n", time.Now().Format("2006-01-02 15:04 MST")))
-
 	return sb.String()
 }
 
