@@ -1,0 +1,12 @@
+credentials:
+  gmail:
+    enabled: true
+    oauth_file: "~/.machinus/gmail-token.json"
+
+  calendar:
+      enabled: true
+      oauth_file: "~/.machinus/calendar-token.json"
+
+    slack:
+      enabled: true
+      token: "xoxb-xxx"
