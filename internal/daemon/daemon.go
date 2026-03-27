@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/machinus/cloud-agent/internal/scheduler"
 	"github.com/machinus/cloud-agent/internal/config"
 	"github.com/machinus/cloud-agent/internal/ui/app"
 	uiconfig "github.com/machinus/cloud-agent/internal/ui/config"
@@ -23,6 +24,7 @@ type Daemon struct {
 	pidManager *PIDManager
 	logger     *DaemonLogger
 	agent      app.AgentCoordinator
+	scheduler  *scheduler.Scheduler
 	shutdown   chan struct{}
 	running    bool
 	mu         sync.Mutex
@@ -55,6 +57,7 @@ func New(cfg DaemonConfig) (* Daemon, error) {
 		pidManager: pidManager,
 		logger:     logger,
 		agent:      agent,
+		scheduler: 	nil,	// To be initiated in Start()
 		shutdown:   make(chan struct{}),
 		running:    false,
 	}, nil
@@ -83,6 +86,16 @@ func (d *Daemon) Start() error {
 		d.logger.Error(fmt.Sprintf("Failed to write PID: %v", err))
 		return fmt.Errorf("failed to write PID: %w", err)
 	}
+
+	// Initialize and start scheduler
+	d.scheduler = scheduler.New(scheduler.Config{
+		ScheduleFile: "~/.machinus/schedule.yml",
+		Agent: 		  d, 
+	})
+	if err := d.scheduler.Start(); err != nil {
+		d.logger.Error(fmt.Sprintf("Failed to start scheduler: %v", err))
+		return fmt.Errorf("failed to start scheduler: %w", err)
+	}
 	d.running = true
 	d.logger.Info("Daemon Started")
 	return nil
@@ -98,6 +111,10 @@ func (d *Daemon) Stop() error {
 	}
 
 	d.logger.Info("Stopping Daemon....")
+	// Stop Scheduler
+	if d.scheduler != nil {
+		d.scheduler.Stop()
+	}
 	d.running = false
 
 	// Close Logger
@@ -152,3 +169,10 @@ func (d *Daemon) IsRunning() bool {
 	return d.running
 }
 
+// RunTask(): method to implemeent AgentRunner interface
+func (d *Daemon) RunTask(task string) error {
+	d.logger.Info(fmt.Sprintf("Running task: %s", task))
+	// TODO -> Executing via task agent
+	d.logger.Info(fmt.Sprintf("Task executed: %s", task))
+	return nil
+}
